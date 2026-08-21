@@ -1,7 +1,7 @@
 /**
  * ============================================================================
- * webCV削除延長バルス
- * Version 1.0.3
+ * webCV 削除延長バルス
+ * Version 1.0.4
  * ============================================================================
  * targetCode.js v5 の更新エンジンをベースに、ブックマークレット配布用のUIを追加。
  *
@@ -11,6 +11,7 @@
  * - 「CV収録送出」グループ選択時のみ実行
  * - 削除日のみ / 削除日+預入日の2モード
  * - 削除日は既存値以上の場合のみ処理（前倒し禁止・既存値空欄は素材全体をスキップ）
+ * - 削除日・預入日はツール実行日以降のみ選択可能
  * - 削除日 > 預入日 を必須条件とする
  * - 実行直前に対象スナップショットを再検証し、変化があれば中断
  * - 実行中はwebCV画面操作をガードし、離脱時にブラウザ警告を表示
@@ -21,7 +22,7 @@
 (function () {
   'use strict';
 
-  var TOOL_VERSION = '1.0.3';
+  var TOOL_VERSION = '1.0.4';
   var TOOL_GLOBAL = '__cvDateBatchTool';
   var RESULT_GLOBAL = '__cvDeleteDateResults';
 
@@ -68,6 +69,7 @@
   var originalWindowOpen = null;
   var guardCleanup = null;
   var beforeUnloadHandler = null;
+  var executionDateIso = null;
 
   // ===== 共通ユーティリティ ==================================================
   function visible(el) {
@@ -470,9 +472,9 @@
       '@media(max-width:760px){.panel{height:94vh;max-width:98vw}.config{grid-template-columns:1fr 1fr}.mode-field{grid-column:1/-1}.list-head,.result-row{grid-template-columns:140px 130px 105px 105px minmax(210px,1fr)}}',
       '</style>',
       '<div class="overlay">',
-      '  <div class="panel" role="dialog" aria-modal="true" aria-label="webCV削除延長バルス">',
+      '  <div class="panel" role="dialog" aria-modal="true" aria-label="webCV 削除延長バルス">',
       '    <div class="titlebar">',
-      '      <h1>webCV削除延長バルス</h1>',
+      '      <h1>webCV 削除延長バルス</h1>',
       '      <span class="version">Ver. ' + TOOL_VERSION + '</span>',
       '      <button class="xbtn" id="btn-x" aria-label="閉じる" title="閉じる">×</button>',
       '    </div>',
@@ -483,7 +485,7 @@
       '        <label><span class="field-label">削除日</span><input type="date" id="delete-date"></label>',
       '        <label><span class="field-label">預入日</span><input type="date" id="deposit-date" disabled></label>',
       '      </div>',
-      '      <div class="rule">日付ルール: <strong>削除日 &gt; 預入日</strong>。「削除日+預入日を更新」ではこの条件を満たす日付のみ実行できます。</div>',
+      '      <div class="rule">日付ルール: <strong>削除日・預入日はツール実行日以降</strong>、かつ <strong>削除日 &gt; 預入日</strong>。「削除日+預入日を更新」では両条件を満たす日付のみ実行できます。</div>',
       '      <div class="validation" id="validation"></div>',
       '    </div>',
       '    <div class="summary">',
@@ -510,7 +512,9 @@
     $('btn-x').addEventListener('click', closeTool);
     $('btn-close').addEventListener('click', closeTool);
     $('btn-run').addEventListener('click', startRun);
+    $('delete-date').addEventListener('input', validateConfig);
     $('delete-date').addEventListener('change', validateConfig);
+    $('deposit-date').addEventListener('input', validateConfig);
     $('deposit-date').addEventListener('change', validateConfig);
     Array.from(shadow.querySelectorAll('input[name="mode"]')).forEach(function (el) {
       el.addEventListener('change', function () {
@@ -553,8 +557,12 @@
 
     if (!del) {
       message = '削除日を選択してください。';
+    } else if (executionDateIso && del < executionDateIso) {
+      message = '削除日はツール実行日（' + displayIso(executionDateIso) + '）以降の日付を選択してください。';
     } else if (mode === '2' && !dep) {
       message = '預入日を選択してください。';
+    } else if (mode === '2' && executionDateIso && dep < executionDateIso) {
+      message = '預入日はツール実行日（' + displayIso(executionDateIso) + '）以降の日付を選択してください。';
     } else if (mode === '2' && del <= dep) {
       message = '削除日は預入日より後の日付にしてください（削除日 > 預入日）。';
     }
@@ -669,6 +677,9 @@
     host.style.display = '';
 
     var today = new Date();
+    executionDateIso = isoLocal(today);
+    $('delete-date').min = executionDateIso;
+    $('deposit-date').min = executionDateIso;
     $('delete-date').value = isoLocal(addLocalDays(today, 2));
     $('deposit-date').value = isoLocal(addLocalDays(today, 1));
     $('deposit-date').disabled = true;
