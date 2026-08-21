@@ -1,7 +1,7 @@
 /**
  * ============================================================================
  * webCV 削除日延長バルス
- * Version 1.0.5
+ * Version 1.0.6
  * ============================================================================
  * targetCode.js v5 の更新エンジンをベースに、ブックマークレット配布用のUIを追加。
  *
@@ -12,6 +12,7 @@
  * - 「CV収録送出」グループ選択時のみ実行
  * - 削除日のみ / 削除日+預入日の2モード
  * - 削除日は既存値以上の場合のみ処理（前倒し禁止・既存値空欄は素材全体をスキップ）
+ * - コンテナ画面では削除済素材（サムネイル枠src空 + 素材タイトル空）を事前判定してスキップ
  * - 削除日・預入日はツール実行日以降のみ選択可能
  * - 削除日 > 預入日 を必須条件とする
  * - 実行直前に対象スナップショットを再検証し、変化があれば中断
@@ -23,7 +24,7 @@
 (function () {
   'use strict';
 
-  var TOOL_VERSION = '1.0.5';
+  var TOOL_VERSION = '1.0.6';
   var TOOL_GLOBAL = '__cvDateBatchTool';
   var RESULT_GLOBAL = '__cvDeleteDateResults';
 
@@ -161,6 +162,49 @@
     if (thumbnailImage) return thumbnailImage;
     if (viewMode === 'list') return null;
     return scope.querySelector('img') || scope;
+  }
+
+  // 削除済素材の判定は、既存のプレビュー起動要素取得とは分離する。
+  // カット素材由来の削除済ではハサミアイコンにも photo クラスが付くため、
+  // img.photo:not(.card-img-top) で実サムネイル枠だけを対象にする。
+  function findMaterialThumbnailFrame(scope) {
+    if (!scope) return null;
+    return scope.querySelector('img.photo:not(.card-img-top)');
+  }
+
+  function getMaterialTitleForDeletedCheck(scope, viewMode) {
+    if (!scope) return { available: false, value: '' };
+
+    if (viewMode !== 'list') {
+      var title = scope.querySelector('p.m-0');
+      if (!title) return { available: false, value: '' };
+      return { available: true, value: (title.textContent || '').trim() };
+    }
+
+    var table = scope.closest && scope.closest('table.search-list');
+    if (!table) return { available: false, value: '' };
+    var headers = Array.from(table.querySelectorAll('thead th, thead td')).filter(function (cell) {
+      return (cell.innerText || cell.textContent || '').trim() === '素材タイトル';
+    });
+    if (headers.length !== 1) return { available: false, value: '' };
+
+    var index = headers[0].cellIndex;
+    var cell = scope.cells && scope.cells[index];
+    if (!cell) return { available: false, value: '' };
+    return { available: true, value: (cell.textContent || '').trim() };
+  }
+
+  function isDeletedMaterial(scope, viewMode) {
+    var thumbnail = findMaterialThumbnailFrame(scope);
+    if (!thumbnail) return false;
+
+    // img.src は空属性をページURLへ解決する場合があるため、属性の生値で判定する。
+    var src = thumbnail.getAttribute('src');
+    if (src == null || String(src).trim() !== '') return false;
+
+    var title = getMaterialTitleForDeletedCheck(scope, viewMode);
+    // リスト表示で素材タイトル列が非表示なら、誤スキップ防止のため削除済と断定しない。
+    return title.available && title.value === '';
   }
 
   function makeUnknownFingerprint(scope, order) {
@@ -426,12 +470,18 @@
     var targets = [];
     var duplicates = [];
     var excluded = [];
+    var deleted = [];
     var unknown = [];
 
     items.forEach(function (item) {
       if (item.isError) {
         item.kind = 'excluded';
         excluded.push(item);
+        return;
+      }
+      if (screen === 'container' && isDeletedMaterial(item.tile, collected.viewMode)) {
+        item.kind = 'deleted';
+        deleted.push(item);
         return;
       }
       if (!item.noKey || (collected.viewMode === 'list' && !item.previewTrigger)) {
@@ -457,6 +507,7 @@
       targets: targets,
       duplicates: duplicates,
       excluded: excluded,
+      deleted: deleted,
       unknown: unknown
     };
   }
@@ -665,7 +716,7 @@
     var message = '';
 
     if (currentContext && currentContext.targets.length === 0) {
-      message = '処理対象の素材がありません。番号不明・Error除外などの一覧を確認してください。';
+      message = '処理対象の素材がありません。削除済・番号不明・Error除外などの一覧を確認してください。';
     } else if (!del) {
       message = '削除日を選択してください。';
     } else if (executionDateIso && del < executionDateIso) {
@@ -684,6 +735,13 @@
   }
 
   function rowInitialModel(item) {
+    if (item.kind === 'deleted') {
+      return {
+        order: item.order, no: item.no || item.fallbackLabel || '(番号不明)', kind: item.kind, final: true,
+        status: 'スキップ(削除済み)', statusClass: 'skip', delNote: '-', depNote: '-',
+        reason: '削除済素材のため処理対象外'
+      };
+    }
     if (item.kind === 'duplicate') {
       return {
         order: item.order, no: item.no, kind: item.kind, final: true,
@@ -800,8 +858,8 @@
     $('screen-info').textContent = '実行画面: ' + ctx.screenDesc + ' / ' + ctx.viewDesc;
     $('detected-info').textContent =
       '認識: ' + ctx.items.length + '件 / 処理対象: ' + ctx.targets.length +
-      '件 / Error除外: ' + ctx.excluded.length + '件 / 重複: ' + ctx.duplicates.length +
-      '件 / 番号不明: ' + ctx.unknown.length + '件';
+      '件 / 削除済: ' + ctx.deleted.length + '件 / Error除外: ' + ctx.excluded.length +
+      '件 / 重複: ' + ctx.duplicates.length + '件 / 番号不明: ' + ctx.unknown.length + '件';
 
     $('config-area').style.opacity = '1';
     Array.from(shadow.querySelectorAll('input')).forEach(function (el) { el.disabled = false; });
@@ -816,7 +874,7 @@
     $('footer-note').textContent = '対象一覧と設定日を確認してから実行してください。';
     if (ctx.targets.length === 0) {
       setMessage(
-        '素材は' + ctx.items.length + '件認識しましたが、処理対象は0件です。番号不明・Error除外などの一覧を確認してください。',
+        '素材は' + ctx.items.length + '件認識しましたが、処理対象は0件です。削除済・番号不明・Error除外などの一覧を確認してください。',
         'warn'
       );
     } else if (ctx.targets.length >= 100) {
