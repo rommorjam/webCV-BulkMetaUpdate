@@ -1,0 +1,1168 @@
+/**
+ * ============================================================================
+ * webCV 削除日/預入日 一括設定ツール
+ * Version 1.0.0
+ * ============================================================================
+ * targetCode.js v5 の更新エンジンをベースに、ブックマークレット配布用のUIを追加。
+ *
+ * 主要仕様:
+ * - 素材検索画面 / コンテナ画面に対応
+ * - 2画面モードでは実行不可
+ * - 「CV収録送出」グループ選択時のみ実行
+ * - 削除日のみ / 削除日+預入日の2モード
+ * - 削除日 > 預入日 を必須条件とする
+ * - 実行直前に対象スナップショットを再検証し、変化があれば中断
+ * - 実行中はwebCV画面操作をガードし、離脱時にブラウザ警告を表示
+ * - 対象素材ごとの進捗・結果を同一画面でリアルタイム表示
+ * - 不可視iframe、Workerタイマー、再描画対策、保存後検証、1回リトライを維持
+ * ============================================================================
+ */
+(function () {
+  'use strict';
+
+  var TOOL_VERSION = '1.0.0';
+  var TOOL_GLOBAL = '__cvDateBatchTool';
+  var RESULT_GLOBAL = '__cvDeleteDateResults';
+
+  // 既に読み込み済みの場合:
+  // - 同じ版なら既存インスタンスを再表示
+  // - 新版が読み込まれた場合は、実行中でなければ旧版を破棄して新版へ入れ替える
+  // これにより同じwebCVタブを開き続けていても、次回クリック時に最新版が使われる。
+  if (window[TOOL_GLOBAL]) {
+    var existingTool = window[TOOL_GLOBAL];
+    if (existingTool.version === TOOL_VERSION && typeof existingTool.show === 'function') {
+      existingTool.show();
+      return;
+    }
+    if (existingTool.running) {
+      if (typeof existingTool.show === 'function') existingTool.show();
+      return;
+    }
+    if (typeof existingTool.destroy === 'function') {
+      existingTool.destroy();
+    } else {
+      var oldHost = document.getElementById('cv-date-batch-tool-host');
+      if (oldHost) oldHost.remove();
+      try { delete window[TOOL_GLOBAL]; } catch (e) { window[TOOL_GLOBAL] = null; }
+    }
+  }
+
+  // ===== 調整用パラメータ ====================================================
+  var USE_IFRAME = true;            // true: 不可視iframe方式 / false: ポップアップ方式
+  var STEP_TIMEOUT_MS = 20000;      // 各ステップ(画面反応待ち)のタイムアウト
+  var POLL_MS = 250;                // 状態ポーリング間隔
+  var BETWEEN_MATERIALS_MS = 800;   // 素材間の待機(サーバー負荷軽減)
+  var MAX_ATTEMPTS = 2;             // 素材ごとの最大試行回数(=1回リトライ)
+
+  var host = null;
+  var shadow = null;
+  var running = false;
+  var currentContext = null;
+  var launchSnapshot = null;
+  var rowModels = [];
+  var rowEls = new Map();
+  var worker = null;
+  var sleep = null;
+  var captured = null;
+  var originalWindowOpen = null;
+  var guardCleanup = null;
+  var beforeUnloadHandler = null;
+
+  // ===== 共通ユーティリティ ==================================================
+  function visible(el) {
+    return !!el && el.getBoundingClientRect().width > 0;
+  }
+
+  function addLocalDays(baseDate, days) {
+    var d = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate());
+    d.setDate(d.getDate() + days);
+    return d;
+  }
+
+  function isoLocal(d) {
+    return d.getFullYear() + '-' +
+      String(d.getMonth() + 1).padStart(2, '0') + '-' +
+      String(d.getDate()).padStart(2, '0');
+  }
+
+  function displayIso(iso) {
+    return iso ? iso.replace(/-/g, '/') : '-';
+  }
+
+  function fatalError(message) {
+    var e = new Error(message);
+    e.__cvFatal = true;
+    return e;
+  }
+
+  // ===== Worker タイマー =====================================================
+  function ensureTimer() {
+    if (sleep) return;
+    try {
+      var blob = new Blob(['onmessage=e=>{setTimeout(()=>postMessage(e.data.id),e.data.ms)}']);
+      var objectUrl = URL.createObjectURL(blob);
+      worker = new Worker(objectUrl);
+      URL.revokeObjectURL(objectUrl);
+      var cbs = new Map();
+      var seq = 0;
+      worker.onmessage = function (e) {
+        var cb = cbs.get(e.data);
+        cbs.delete(e.data);
+        if (cb) cb();
+      };
+      sleep = function (ms) {
+        return new Promise(function (resolve) {
+          var id = ++seq;
+          cbs.set(id, resolve);
+          worker.postMessage({ id: id, ms: ms });
+        });
+      };
+    } catch (e) {
+      // Worker が使えない環境では通常の setTimeout にフォールバックする。
+      sleep = function (ms) {
+        return new Promise(function (resolve) { setTimeout(resolve, ms); });
+      };
+    }
+  }
+
+  function finishTimer() {
+    if (worker) {
+      worker.terminate();
+      worker = null;
+    }
+    sleep = null;
+  }
+
+  async function waitFor(fn, timeoutMs, desc) {
+    ensureTimer();
+    var t0 = Date.now();
+    while (Date.now() - t0 < timeoutMs) {
+      var v = null;
+      try {
+        v = fn();
+      } catch (e) {
+        // 明示的な致命エラーのみ即時伝播し、Blazor再描画中の一時例外は従来通り無視する。
+        if (e && e.__cvFatal) throw e;
+      }
+      if (v) return v;
+      await sleep(POLL_MS);
+    }
+    throw new Error('タイムアウト: ' + desc);
+  }
+
+  // ===== 画面判定・素材収集 ==================================================
+  function getScreenInfo() {
+    var twoPane =
+      (visible(document.querySelector('#MaterialListPart')) &&
+       visible(document.querySelector('#materialListPart'))) ||
+      /^\/material\/search\/container\//i.test(location.pathname) ||
+      /^\/material\/container\/search\//i.test(location.pathname);
+
+    if (twoPane) {
+      return { ok: false, message: '2画面モードを解除してから実行してください' };
+    }
+
+    var screen =
+      location.pathname.startsWith('/material/search') ? 'search' :
+      location.pathname.startsWith('/material/container') ? 'container' : null;
+
+    if (!screen) {
+      return {
+        ok: false,
+        message: 'このツールは素材検索画面 (/material/search) または\nコンテナ画面 (/material/container) で実行してください。'
+      };
+    }
+
+    var groupSel = Array.from(document.querySelectorAll('select')).find(function (s) {
+      return /bg-menu-user-group/.test(String(s.className)) && s.getBoundingClientRect().width > 0;
+    });
+    var groupName = groupSel && groupSel.selectedOptions[0]
+      ? groupSel.selectedOptions[0].text.trim() : null;
+
+    if (groupName !== 'CV収録送出') {
+      return {
+        ok: false,
+        message: 'CV収録送出グループを選択してください' +
+          (groupName ? '\n(現在の選択: ' + groupName + ')' : '\n(グループ選択を確認できませんでした)')
+      };
+    }
+
+    return {
+      ok: true,
+      screen: screen,
+      screenDesc: screen === 'search' ? '素材検索画面' : 'コンテナ画面',
+      groupName: groupName
+    };
+  }
+
+  function collectTiles(screen) {
+    if (screen === 'search') {
+      return Array.from(document.querySelectorAll('#MaterialListPart .draggable-tag'))
+        .filter(function (t) { return t.getBoundingClientRect().width > 0; });
+    }
+
+    return Array.from(document.querySelectorAll('#materialListPart .tableBorderBlack'))
+      .filter(function (t) {
+        return t.getBoundingClientRect().width > 0 &&
+          /FC\d+-W\d+/.test(t.innerText) &&
+          !(t.parentElement && t.parentElement.closest('.tableBorderBlack'));
+      });
+  }
+
+  function buildMaterialState(screen) {
+    var tiles = collectTiles(screen);
+    if (tiles.length === 0) {
+      return {
+        ok: false,
+        message: screen === 'search'
+          ? '検索結果の素材が表示されていません。素材を検索してから実行してください。'
+          : 'コンテナが選択されていないか、素材がありません。\n特定のコンテナを開いて素材を表示してから実行してください。'
+      };
+    }
+
+    var items = tiles.map(function (tile, order) {
+      var noMatch = tile.innerText.match(/FC\d+-W\d+/);
+      var isError = Array.from(tile.querySelectorAll('.badge')).some(function (b) {
+        return /badgeOrange/.test(b.className) || /\bError\b/.test(b.innerText);
+      });
+      return {
+        order: order,
+        tile: tile,
+        no: noMatch ? noMatch[0] : null,
+        isError: isError,
+        kind: null
+      };
+    });
+
+    var seenNo = new Set();
+    var targets = [];
+    var duplicates = [];
+    var excluded = [];
+    var unknown = [];
+
+    items.forEach(function (item) {
+      if (item.isError) {
+        item.kind = 'excluded';
+        excluded.push(item);
+        return;
+      }
+      if (!item.no) {
+        item.kind = 'unknown';
+        unknown.push(item);
+        return;
+      }
+      if (seenNo.has(item.no)) {
+        item.kind = 'duplicate';
+        duplicates.push(item);
+        return;
+      }
+      seenNo.add(item.no);
+      item.kind = 'target';
+      targets.push(item);
+    });
+
+    if (targets.length === 0) {
+      return {
+        ok: false,
+        message: '処理対象の素材がありません(全件 Error 除外または素材番号不明)。'
+      };
+    }
+
+    return {
+      ok: true,
+      items: items,
+      targets: targets,
+      duplicates: duplicates,
+      excluded: excluded,
+      unknown: unknown
+    };
+  }
+
+  function captureContext() {
+    var screenInfo = getScreenInfo();
+    if (!screenInfo.ok) return screenInfo;
+    var materialState = buildMaterialState(screenInfo.screen);
+    if (!materialState.ok) return materialState;
+    return Object.assign({}, screenInfo, materialState);
+  }
+
+  function makeSnapshot(ctx) {
+    return {
+      screen: ctx.screen,
+      groupName: ctx.groupName,
+      items: ctx.items.map(function (i) {
+        return {
+          order: i.order,
+          no: i.no || null,
+          isError: !!i.isError,
+          kind: i.kind
+        };
+      })
+    };
+  }
+
+  function snapshotsEqual(a, b) {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+
+  // ===== UI ==================================================================
+  function createUi() {
+    if (host) return;
+
+    host = document.createElement('div');
+    host.id = 'cv-date-batch-tool-host';
+    host.style.cssText = 'all:initial;position:fixed;z-index:2147483647;';
+    shadow = host.attachShadow({ mode: 'open' });
+
+    shadow.innerHTML = [
+      '<style>',
+      ':host{all:initial}',
+      '*{box-sizing:border-box}',
+      '.overlay{position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483647;background:rgba(15,23,42,.52);display:flex;align-items:center;justify-content:center;padding:18px;font-family:"Hiragino Sans","Yu Gothic UI","Meiryo",sans-serif;color:#1e293b;font-size:14px}',
+      '.panel{width:980px;max-width:96vw;height:88vh;max-height:900px;min-height:560px;background:#fff;border-radius:12px;box-shadow:0 24px 80px rgba(0,0,0,.42);display:flex;flex-direction:column;overflow:hidden}',
+      '.titlebar{flex:0 0 auto;background:#0f766e;color:#fff;padding:13px 17px;display:flex;align-items:center;gap:12px}',
+      '.titlebar h1{font-size:16px;font-weight:700;margin:0;flex:1}',
+      '.version{font-size:11px;opacity:.82}',
+      '.xbtn{border:0;background:transparent;color:#fff;font-size:21px;line-height:1;padding:2px 6px;border-radius:4px;cursor:pointer}',
+      '.xbtn:hover{background:rgba(255,255,255,.18)}',
+      '.xbtn:disabled{opacity:.35;cursor:not-allowed}',
+      '.top{flex:0 0 auto;padding:14px 16px 12px;border-bottom:1px solid #e2e8f0;background:#fff}',
+      '.context{display:flex;gap:14px;flex-wrap:wrap;color:#475569;font-size:12px;margin-bottom:10px}',
+      '.config{display:grid;grid-template-columns:minmax(250px,1.35fr) minmax(180px,.8fr) minmax(180px,.8fr);gap:12px;align-items:end}',
+      '.field-label{display:block;font-size:12px;font-weight:700;color:#475569;margin-bottom:5px}',
+      '.radios{display:flex;gap:14px;min-height:36px;align-items:center;flex-wrap:wrap}',
+      '.radio{display:inline-flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap}',
+      '.radio input{accent-color:#0f766e}',
+      'input[type=date]{width:100%;height:36px;border:1px solid #cbd5e1;border-radius:7px;padding:5px 9px;font:inherit;background:#fff;color:#1e293b}',
+      'input[type=date]:focus{outline:2px solid #0f766e;outline-offset:-1px}',
+      'input[type=date]:disabled{background:#f1f5f9;color:#94a3b8}',
+      '.rule{margin-top:8px;font-size:12px;color:#64748b}',
+      '.validation{min-height:18px;margin-top:4px;font-size:12px;color:#b91c1c;font-weight:600}',
+      '.summary{flex:0 0 auto;padding:12px 16px;border-bottom:1px solid #e2e8f0;background:#f8fafc}',
+      '.summary-head{display:flex;align-items:center;gap:10px;margin-bottom:8px}',
+      '.state-title{font-size:14px;font-weight:700;flex:1}',
+      '.current{font-size:12px;color:#475569;max-width:46%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.progress-line{display:flex;align-items:center;gap:10px}',
+      '.progress-track{height:10px;background:#e2e8f0;border-radius:999px;overflow:hidden;flex:1}',
+      '.progress-bar{height:100%;width:0;background:#0f766e;transition:width .15s ease}',
+      '.progress-text{font-size:12px;font-weight:700;min-width:90px;text-align:right}',
+      '.counts{display:flex;gap:10px;flex-wrap:wrap;margin-top:9px;font-size:12px}',
+      '.pill{border-radius:999px;padding:4px 9px;background:#fff;border:1px solid #cbd5e1}',
+      '.pill strong{font-size:13px}',
+      '.pill.success{border-color:#86efac;color:#166534}',
+      '.pill.skip{border-color:#fde68a;color:#92400e}',
+      '.pill.fail{border-color:#fecaca;color:#991b1b}',
+      '.pill.exclude{border-color:#cbd5e1;color:#475569}',
+      '.message{display:none;margin-top:9px;border-radius:7px;padding:8px 10px;font-size:12px}',
+      '.message.show{display:block}',
+      '.message.error{background:#fef2f2;border:1px solid #fecaca;color:#991b1b}',
+      '.message.info{background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af}',
+      '.list-wrap{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;background:#fff}',
+      '.list-head,.result-row{display:grid;grid-template-columns:160px 150px 120px 120px minmax(240px,1fr);align-items:center}',
+      '.list-head{flex:0 0 auto;background:#f1f5f9;border-bottom:1px solid #cbd5e1;font-size:11px;font-weight:700;color:#475569}',
+      '.list-head>div{padding:8px 10px;border-right:1px solid #e2e8f0}',
+      '.list-scroll{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain}',
+      '.result-row{min-height:42px;border-bottom:1px solid #eef2f7;font-size:12px}',
+      '.result-row>div{padding:8px 10px;min-width:0;overflow-wrap:anywhere}',
+      '.result-row.processing{background:#ecfeff}',
+      '.result-row.success{background:#f0fdf4}',
+      '.result-row.fail{background:#fef2f2}',
+      '.result-row.skip{background:#fffbeb}',
+      '.result-row.excluded{background:#f8fafc;color:#64748b}',
+      '.material{font-family:"MS Gothic","Consolas",monospace;font-weight:700}',
+      '.status-badge{display:inline-flex;align-items:center;gap:5px;font-weight:700}',
+      '.muted{color:#94a3b8}',
+      '.footer{flex:0 0 auto;border-top:1px solid #e2e8f0;padding:10px 16px;background:#fff;display:flex;align-items:center;gap:8px}',
+      '.footer-note{font-size:11px;color:#64748b;flex:1}',
+      '.btn{border:1px solid #cbd5e1;background:#fff;color:#1e293b;border-radius:7px;padding:8px 15px;font:inherit;font-size:13px;cursor:pointer}',
+      '.btn:hover{background:#f1f5f9}',
+      '.btn-primary{background:#0f766e;color:#fff;border-color:#0f766e;font-weight:700}',
+      '.btn-primary:hover{background:#0d5f59}',
+      '.btn:disabled{opacity:.45;cursor:not-allowed}',
+      '.btn:disabled:hover{background:inherit}',
+      '@media(max-width:760px){.panel{height:94vh;max-width:98vw}.config{grid-template-columns:1fr 1fr}.mode-field{grid-column:1/-1}.list-head,.result-row{grid-template-columns:140px 130px 105px 105px minmax(210px,1fr)}}',
+      '</style>',
+      '<div class="overlay">',
+      '  <div class="panel" role="dialog" aria-modal="true" aria-label="webCV 削除日・預入日 一括設定ツール">',
+      '    <div class="titlebar">',
+      '      <h1>webCV 削除日・預入日 一括設定ツール</h1>',
+      '      <span class="version">Ver. ' + TOOL_VERSION + '</span>',
+      '      <button class="xbtn" id="btn-x" aria-label="閉じる" title="閉じる">×</button>',
+      '    </div>',
+      '    <div class="top">',
+      '      <div class="context"><span id="screen-info"></span><span>グループ: CV収録送出</span><span id="detected-info"></span></div>',
+      '      <div class="config" id="config-area">',
+      '        <div class="mode-field"><span class="field-label">処理モード</span><div class="radios"><label class="radio"><input type="radio" name="mode" value="1" checked> 削除日のみ更新</label><label class="radio"><input type="radio" name="mode" value="2"> 削除日＋預入日を更新</label></div></div>',
+      '        <label><span class="field-label">削除日</span><input type="date" id="delete-date"></label>',
+      '        <label><span class="field-label">預入日</span><input type="date" id="deposit-date" disabled></label>',
+      '      </div>',
+      '      <div class="rule">日付ルール: <strong>削除日 &gt; 預入日</strong>。モード2ではこの条件を満たす日付のみ実行できます。</div>',
+      '      <div class="validation" id="validation"></div>',
+      '    </div>',
+      '    <div class="summary">',
+      '      <div class="summary-head"><div class="state-title" id="state-title">実行内容を確認してください</div><div class="current" id="current"></div></div>',
+      '      <div class="progress-line"><div class="progress-track"><div class="progress-bar" id="progress-bar"></div></div><div class="progress-text" id="progress-text">0 / 0件</div></div>',
+      '      <div class="counts"><span class="pill success">成功 <strong id="count-success">0</strong></span><span class="pill skip">スキップ <strong id="count-skip">0</strong></span><span class="pill fail">失敗 <strong id="count-fail">0</strong></span><span class="pill exclude">除外 <strong id="count-exclude">0</strong></span></div>',
+      '      <div class="message" id="message"></div>',
+      '    </div>',
+      '    <div class="list-wrap">',
+      '      <div class="list-head"><div>素材番号</div><div>結果 / 状態</div><div>削除日</div><div>預入日</div><div>詳細</div></div>',
+      '      <div class="list-scroll" id="list-scroll"></div>',
+      '    </div>',
+      '    <div class="footer">',
+      '      <div class="footer-note" id="footer-note">実行中はこのタブを閉じたり、webCVを操作しないでください。</div>',
+      '      <button class="btn" id="btn-close">閉じる</button>',
+      '      <button class="btn btn-primary" id="btn-run">一括設定を実行</button>',
+      '    </div>',
+      '  </div>',
+      '</div>'
+    ].join('');
+
+    document.body.appendChild(host);
+
+    $('btn-x').addEventListener('click', closeTool);
+    $('btn-close').addEventListener('click', closeTool);
+    $('btn-run').addEventListener('click', startRun);
+    $('delete-date').addEventListener('change', validateConfig);
+    $('deposit-date').addEventListener('change', validateConfig);
+    Array.from(shadow.querySelectorAll('input[name="mode"]')).forEach(function (el) {
+      el.addEventListener('change', function () {
+        $('deposit-date').disabled = getMode() !== '2';
+        validateConfig();
+      });
+    });
+
+    shadow.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && !running) closeTool();
+    });
+  }
+
+  function $(id) {
+    return shadow.getElementById(id);
+  }
+
+  function getMode() {
+    var checked = shadow.querySelector('input[name="mode"]:checked');
+    return checked ? checked.value : '1';
+  }
+
+  function setMessage(text, kind) {
+    var el = $('message');
+    if (!text) {
+      el.textContent = '';
+      el.className = 'message';
+      return;
+    }
+    el.textContent = text;
+    el.className = 'message show ' + (kind || 'info');
+  }
+
+  function validateConfig() {
+    if (!shadow) return false;
+    var mode = getMode();
+    var del = $('delete-date').value;
+    var dep = $('deposit-date').value;
+    var message = '';
+
+    if (!del) {
+      message = '削除日を選択してください。';
+    } else if (mode === '2' && !dep) {
+      message = '預入日を選択してください。';
+    } else if (mode === '2' && del <= dep) {
+      message = '削除日は預入日より後の日付にしてください（削除日 > 預入日）。';
+    }
+
+    $('validation').textContent = message;
+    $('btn-run').disabled = !!message || running;
+    return !message;
+  }
+
+  function rowInitialModel(item) {
+    if (item.kind === 'duplicate') {
+      return {
+        order: item.order, no: item.no, kind: item.kind, final: true,
+        status: 'スキップ(重複)', statusClass: 'skip', delNote: '-', depNote: '-',
+        reason: '同一素材番号のため代表1件のみ処理（更新は全てに反映される）'
+      };
+    }
+    if (item.kind === 'excluded') {
+      return {
+        order: item.order, no: item.no || '(番号不明)', kind: item.kind, final: true,
+        status: '除外', statusClass: 'excluded', delNote: '-', depNote: '-',
+        reason: 'Error バッジのため対象外'
+      };
+    }
+    if (item.kind === 'unknown') {
+      return {
+        order: item.order, no: '(番号不明)', kind: item.kind, final: true,
+        status: 'スキップ', statusClass: 'skip', delNote: '-', depNote: '-',
+        reason: '素材番号を取得できない'
+      };
+    }
+    return {
+      order: item.order, no: item.no, kind: item.kind, final: false,
+      status: '待機中', statusClass: '', delNote: '-', depNote: '-', reason: '実行待ち'
+    };
+  }
+
+  function renderRows(ctx) {
+    rowEls.clear();
+    rowModels = ctx.items.map(rowInitialModel).sort(function (a, b) { return a.order - b.order; });
+    var list = $('list-scroll');
+    list.innerHTML = '';
+
+    rowModels.forEach(function (model) {
+      var row = document.createElement('div');
+      row.className = 'result-row ' + (model.statusClass || '');
+      row.dataset.order = String(model.order);
+      row.innerHTML =
+        '<div class="material"></div>' +
+        '<div class="status"></div>' +
+        '<div class="del"></div>' +
+        '<div class="dep"></div>' +
+        '<div class="reason"></div>';
+      list.appendChild(row);
+      rowEls.set(model.order, row);
+      paintRow(model);
+    });
+
+    updateSummary();
+  }
+
+  function paintRow(model) {
+    var row = rowEls.get(model.order);
+    if (!row) return;
+    row.className = 'result-row ' + (model.statusClass || '');
+    row.querySelector('.material').textContent = model.no;
+    row.querySelector('.status').textContent = model.status;
+    row.querySelector('.del').textContent = model.delNote && model.delNote !== '-' ? model.delNote : '—';
+    row.querySelector('.dep').textContent = model.depNote && model.depNote !== '-' ? model.depNote : '—';
+    row.querySelector('.reason').textContent = model.reason || '';
+  }
+
+  function modelForOrder(order) {
+    return rowModels.find(function (r) { return r.order === order; });
+  }
+
+  function updateRow(order, patch) {
+    var model = modelForOrder(order);
+    if (!model) return;
+    Object.assign(model, patch);
+    paintRow(model);
+    updateSummary();
+  }
+
+  function updateSummary() {
+    if (!currentContext || !shadow) return;
+    var targetsTotal = currentContext.targets.length;
+    var targetModels = rowModels.filter(function (r) { return r.kind === 'target'; });
+    var completed = targetModels.filter(function (r) { return r.final; }).length;
+    var success = rowModels.filter(function (r) { return r.final && r.status === '成功'; }).length;
+    var fail = rowModels.filter(function (r) { return r.final && /^失敗/.test(r.status); }).length;
+    var exclude = rowModels.filter(function (r) { return r.kind === 'excluded'; }).length;
+    var skip = rowModels.filter(function (r) {
+      return r.final && r.kind !== 'excluded' && /スキップ/.test(r.status);
+    }).length;
+    var pct = targetsTotal ? Math.round((completed / targetsTotal) * 100) : 0;
+
+    $('progress-bar').style.width = pct + '%';
+    $('progress-text').textContent = completed + ' / ' + targetsTotal + '件 (' + pct + '%)';
+    $('count-success').textContent = String(success);
+    $('count-skip').textContent = String(skip);
+    $('count-fail').textContent = String(fail);
+    $('count-exclude').textContent = String(exclude);
+  }
+
+  function prepareFreshUi(ctx) {
+    currentContext = ctx;
+    launchSnapshot = makeSnapshot(ctx);
+    running = false;
+
+    createUi();
+    host.style.display = '';
+
+    var today = new Date();
+    $('delete-date').value = isoLocal(addLocalDays(today, 2));
+    $('deposit-date').value = isoLocal(addLocalDays(today, 1));
+    $('deposit-date').disabled = true;
+    var mode1 = shadow.querySelector('input[name="mode"][value="1"]');
+    if (mode1) mode1.checked = true;
+
+    $('screen-info').textContent = '実行画面: ' + ctx.screenDesc;
+    $('detected-info').textContent =
+      '認識: ' + ctx.items.length + '件 / 処理対象: ' + ctx.targets.length +
+      '件 / Error除外: ' + ctx.excluded.length + '件 / 重複: ' + ctx.duplicates.length +
+      '件 / 番号不明: ' + ctx.unknown.length + '件';
+
+    $('config-area').style.opacity = '1';
+    Array.from(shadow.querySelectorAll('input')).forEach(function (el) { el.disabled = false; });
+    $('deposit-date').disabled = true;
+    $('btn-x').disabled = false;
+    $('btn-close').disabled = false;
+    $('btn-close').style.display = '';
+    $('btn-run').style.display = '';
+    $('btn-run').textContent = '一括設定を実行';
+    $('state-title').textContent = '実行内容を確認してください';
+    $('current').textContent = '';
+    $('footer-note').textContent = '対象一覧と設定日を確認してから実行してください。';
+    setMessage('', 'info');
+    renderRows(ctx);
+    validateConfig();
+  }
+
+  function showFresh() {
+    if (running) {
+      if (host) host.style.display = '';
+      return;
+    }
+
+    var ctx = captureContext();
+    if (!ctx.ok) {
+      alert(ctx.message);
+      return;
+    }
+    prepareFreshUi(ctx);
+  }
+
+  function closeTool() {
+    if (running) return;
+    if (host) host.style.display = 'none';
+  }
+
+  // ===== 実行中ガード ========================================================
+  function installExecutionGuard() {
+    if (guardCleanup) return;
+
+    var guardedEvents = [
+      'pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click', 'dblclick',
+      'contextmenu', 'wheel', 'touchstart', 'touchmove', 'keydown', 'keypress',
+      'keyup', 'dragstart', 'drop'
+    ];
+
+    var block = function (e) {
+      // ツール自身がwebCVへ送る合成イベント(isTrusted=false)は通し、実ユーザー操作のみ遮断する。
+      if (!e.isTrusted) return;
+      var path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+      if (path.indexOf(host) !== -1) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+    };
+
+    guardedEvents.forEach(function (name) {
+      document.addEventListener(name, block, true);
+    });
+
+    beforeUnloadHandler = function (e) {
+      if (!running) return;
+      e.preventDefault();
+      e.returnValue = '';
+      return '';
+    };
+    window.addEventListener('beforeunload', beforeUnloadHandler);
+
+    guardCleanup = function () {
+      guardedEvents.forEach(function (name) {
+        document.removeEventListener(name, block, true);
+      });
+      if (beforeUnloadHandler) {
+        window.removeEventListener('beforeunload', beforeUnloadHandler);
+        beforeUnloadHandler = null;
+      }
+      guardCleanup = null;
+    };
+  }
+
+  function removeExecutionGuard() {
+    if (guardCleanup) guardCleanup();
+  }
+
+  // ===== window.open フック ==================================================
+  function installWindowOpenHook() {
+    if (originalWindowOpen) return;
+    originalWindowOpen = window.open;
+
+    window.open = function (url, name, features) {
+      if (USE_IFRAME) {
+        var ifr = document.createElement('iframe');
+        // display:none では内部要素の寸法が0になり可視判定が壊れるため画面外へ配置する。
+        ifr.style.cssText = 'position:fixed;left:-20000px;top:0;width:1900px;height:1000px;border:0;';
+        ifr.src = url;
+        document.body.appendChild(ifr);
+        captured = { win: ifr.contentWindow, ifr: ifr };
+        return ifr.contentWindow;
+      }
+
+      var w = originalWindowOpen.call(window, url, name, features);
+      if (w) captured = { win: w, ifr: null };
+      return w;
+    };
+  }
+
+  function restoreWindowOpen() {
+    if (originalWindowOpen) {
+      window.open = originalWindowOpen;
+      originalWindowOpen = null;
+    }
+  }
+
+  function destroyCaptured() {
+    try {
+      if (captured) {
+        if (captured.ifr) captured.ifr.remove();
+        else if (captured.win && !captured.win.closed) captured.win.close();
+      }
+    } catch (e) {
+      // 破棄失敗は無視する。
+    }
+    captured = null;
+  }
+
+  // ===== 更新エンジン ========================================================
+  function clickSequence(el, withDblclick) {
+    var r = el.getBoundingClientRect();
+    var opts = {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      clientX: r.x + r.width / 2,
+      clientY: r.y + r.height / 2,
+      button: 0
+    };
+    var reps = withDblclick ? [1, 2] : [1];
+
+    reps.forEach(function (seq) {
+      el.dispatchEvent(new PointerEvent('pointerdown', Object.assign({}, opts, { detail: seq })));
+      el.dispatchEvent(new MouseEvent('mousedown', Object.assign({}, opts, { detail: seq })));
+      el.dispatchEvent(new PointerEvent('pointerup', Object.assign({}, opts, { detail: seq })));
+      el.dispatchEvent(new MouseEvent('mouseup', Object.assign({}, opts, { detail: seq })));
+      el.dispatchEvent(new MouseEvent('click', Object.assign({}, opts, { detail: seq })));
+    });
+
+    if (withDblclick) {
+      el.dispatchEvent(new MouseEvent('dblclick', Object.assign({}, opts, { detail: 2 })));
+    }
+  }
+
+  function getDoc() {
+    if (!captured) return null;
+    return captured.ifr ? captured.ifr.contentDocument : captured.win.document;
+  }
+
+  function findDateInputByLabel(doc, label) {
+    var leaf = Array.from(doc.querySelectorAll('div,span,label,td')).find(function (e) {
+      return e.children.length === 0 && (e.innerText || '').trim() === label &&
+        e.getBoundingClientRect().width > 0;
+    });
+    if (!leaf) return null;
+
+    var p = leaf.parentElement;
+    for (var k = 0; k < 4 && p; k++) {
+      var inp = p.querySelector('input[type=date]');
+      if (inp) return inp;
+      p = p.parentElement;
+    }
+    return null;
+  }
+
+  function findArchiveSelect(doc) {
+    var leaf = Array.from(doc.querySelectorAll('div,span,label,td')).find(function (e) {
+      return e.children.length === 0 && (e.innerText || '').trim() === 'アーカイブ' &&
+        e.getBoundingClientRect().width > 0;
+    });
+    if (!leaf) return null;
+
+    var p = leaf.parentElement;
+    for (var k = 0; k < 4 && p; k++) {
+      var sel = p.querySelector('select');
+      if (sel) return sel;
+      p = p.parentElement;
+    }
+    return null;
+  }
+
+  function findUpdateButton(doc) {
+    return Array.from(doc.querySelectorAll('button')).find(function (b) {
+      return b.innerText.trim() === '更新' && b.getBoundingClientRect().width > 0;
+    });
+  }
+
+  function setDateValue(inp, iso) {
+    inp.value = iso;
+    inp.dispatchEvent(new Event('input', { bubbles: true }));
+    inp.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function setPhase(item, text, attempt) {
+    updateRow(item.order, {
+      final: false,
+      status: attempt > 1 ? '再試行中 (' + attempt + '/' + MAX_ATTEMPTS + ')' : '処理中',
+      statusClass: 'processing',
+      reason: text
+    });
+    $('current').textContent = '現在処理中: ' + item.no + ' / ' + text;
+  }
+
+  async function processOne(item, mode, del, dep, attempt) {
+    destroyCaptured();
+
+    setPhase(item, '素材を開く準備中', attempt);
+    item.tile.scrollIntoView({ block: 'center' });
+    await sleep(300);
+
+    setPhase(item, 'プレビューを開いています', attempt);
+    var img = item.tile.querySelector('img') || item.tile;
+    clickSequence(img, true);
+    await waitFor(function () { return captured; }, STEP_TIMEOUT_MS,
+      'プレビューが開かない(アプリが window.open を呼ばない)');
+
+    setPhase(item, 'プレビューを読み込んでいます', attempt);
+    await waitFor(function () {
+      var d = getDoc();
+      if (!d) return false;
+      if (d.location && d.location.pathname === '/Error') {
+        throw fatalError('プレビューがエラーページに遷移した');
+      }
+      return d.readyState === 'complete' && /FC\d+-W\d+/.test(d.body.innerText);
+    }, STEP_TIMEOUT_MS, 'プレビューの読み込み');
+
+    var shownMatch = getDoc().body.innerText.match(/FC\d+-W\d+/);
+    if (!shownMatch) throw new Error('プレビュー上の素材番号を取得できない');
+    var shown = shownMatch[0];
+    if (shown !== item.no) {
+      throw new Error('別素材 (' + shown + ') が開いた');
+    }
+
+    setPhase(item, '管理情報タブへ切り替えています', attempt);
+    var tabAnchor = await waitFor(function () {
+      var d = getDoc();
+      if (!d) return null;
+      return Array.from(d.querySelectorAll('a')).find(function (a) {
+        return a.innerText.trim() === '管理情報';
+      });
+    }, STEP_TIMEOUT_MS, '管理情報タブが見つからない');
+    tabAnchor.click();
+
+    await waitFor(function () {
+      var d = getDoc();
+      if (!d) return false;
+      var a = Array.from(d.querySelectorAll('a')).find(function (x) {
+        return x.innerText.trim() === '管理情報';
+      });
+      if (!a || !a.classList.contains('active')) return false;
+      return !!findDateInputByLabel(d, '削除日');
+    }, STEP_TIMEOUT_MS, '管理情報タブへの切替が完了しない');
+
+    setPhase(item, '現在の日付とアーカイブ設定を確認しています', attempt);
+    var doc = getDoc();
+    var delInp = findDateInputByLabel(doc, '削除日');
+    if (!delInp) throw new Error('削除日の入力欄を特定できない');
+    if (delInp.disabled) throw new Error('削除日の入力欄が無効化されている');
+
+    var depInp = findDateInputByLabel(doc, '預入日');
+    var arcSel = findArchiveSelect(doc);
+    var archive = arcSel
+      ? (arcSel.value === 'Target' ? '対象' : (arcSel.value === 'NotTarget' ? '対象外' : '未設定'))
+      : '不明';
+    var depEditable = !!depInp && !depInp.disabled;
+
+    var curDel = delInp.value;
+    var curDep = depInp ? depInp.value : '';
+
+    // 絶対ルール: 最終状態で「削除日 > 預入日」を満たさない素材は変更しない。
+    var willSetDep = mode === '2' && depEditable;
+    var finalDep = willSetDep ? dep.iso : curDep;
+    if (finalDep && del.iso <= finalDep) {
+      await closePreview();
+      return {
+        status: 'スキップ',
+        delNote: '未変更',
+        depNote: '未変更',
+        reason: '制約違反回避: 削除日(' + del.disp + ') > 預入日(' + displayIso(finalDep) + ') を満たさないため'
+      };
+    }
+
+    var needDel = curDel !== del.iso;
+    var needDep = willSetDep && curDep !== dep.iso;
+    var depNote;
+
+    if (mode === '1') depNote = '-';
+    else if (!depEditable) depNote = 'スキップ(アーカイブ' + archive + ')';
+    else if (!needDep) depNote = '設定済み';
+    else depNote = '設定';
+
+    if (!needDel && !needDep) {
+      await closePreview();
+      return {
+        status: 'スキップ(設定済み)',
+        delNote: '設定済み',
+        depNote: depNote,
+        reason: ''
+      };
+    }
+
+    setPhase(item, '日付を入力しています', attempt);
+    if (needDel) setDateValue(delInp, del.iso);
+    if (needDep) setDateValue(depInp, dep.iso);
+
+    setPhase(item, '更新ボタンの有効化を確認しています', attempt);
+    await waitFor(function () {
+      var b = findUpdateButton(getDoc());
+      if (b && !b.disabled) return true;
+
+      var d2 = getDoc();
+      if (!d2) return false;
+      var di = findDateInputByLabel(d2, '削除日');
+      if (needDel && di && !di.disabled && di.value !== del.iso) setDateValue(di, del.iso);
+      var pi = findDateInputByLabel(d2, '預入日');
+      if (needDep && pi && !pi.disabled && pi.value !== dep.iso) setDateValue(pi, dep.iso);
+      return false;
+    }, STEP_TIMEOUT_MS, '更新ボタンが有効化されない(変更がBlazorに伝わっていない)');
+
+    setPhase(item, '更新を保存しています', attempt);
+    var updateButton = findUpdateButton(getDoc());
+    if (!updateButton) throw new Error('更新ボタンを特定できない');
+    updateButton.click();
+
+    await waitFor(function () {
+      var b = findUpdateButton(getDoc());
+      return b && b.disabled;
+    }, STEP_TIMEOUT_MS, '保存完了を確認できない');
+
+    setPhase(item, '保存後の値を検証しています', attempt);
+    var dAfter = getDoc();
+    var delAfter = findDateInputByLabel(dAfter, '削除日');
+    if (!delAfter || delAfter.value !== del.iso) {
+      throw new Error('保存後の削除日が想定と異なる (' + (delAfter ? delAfter.value : '不明') + ')');
+    }
+
+    if (needDep) {
+      var depAfter = findDateInputByLabel(dAfter, '預入日');
+      if (!depAfter || depAfter.value !== dep.iso) {
+        throw new Error('保存後の預入日が想定と異なる (' + (depAfter ? depAfter.value : '不明') + ')');
+      }
+    }
+
+    setPhase(item, 'プレビューを閉じています', attempt);
+    await closePreview();
+
+    return {
+      status: '成功',
+      delNote: needDel ? '設定' : '設定済み',
+      depNote: depNote,
+      reason: ''
+    };
+  }
+
+  async function closePreview() {
+    var doc = getDoc();
+    if (doc) {
+      try {
+        var btns = Array.from(doc.querySelectorAll('button')).filter(function (b) {
+          return b.getBoundingClientRect().width > 0;
+        });
+        var upd = btns.find(function (b) { return b.innerText.trim() === '更新'; });
+        var closeBtn = btns.filter(function (b) { return b.innerText.trim() === '閉じる'; })
+          .find(function (b) { return upd && b.parentElement === upd.parentElement; }) ||
+          btns.filter(function (b) { return b.innerText.trim() === '閉じる'; }).pop();
+        if (closeBtn) closeBtn.click();
+      } catch (e) {
+        // 後段の破棄処理に任せる。
+      }
+    }
+
+    if (captured && captured.ifr) {
+      await sleep(800);
+      destroyCaptured();
+    } else if (captured && captured.win) {
+      try {
+        await waitFor(function () { return captured.win.closed; }, 8000, '閉じる');
+      } catch (e) {
+        destroyCaptured();
+      }
+      captured = null;
+    }
+  }
+
+  // ===== 実行制御 ============================================================
+  async function startRun() {
+    if (running || !validateConfig()) return;
+
+    var mode = getMode();
+    var del = { iso: $('delete-date').value, disp: displayIso($('delete-date').value) };
+    var dep = mode === '2'
+      ? { iso: $('deposit-date').value, disp: displayIso($('deposit-date').value) }
+      : null;
+
+    // 実行直前に画面種別・グループ・全素材分類を再取得し、起動時との差分を検査する。
+    var fresh = captureContext();
+    if (!fresh.ok || !snapshotsEqual(launchSnapshot, fresh.ok ? makeSnapshot(fresh) : null)) {
+      $('state-title').textContent = '処理を中断しました';
+      $('current').textContent = '';
+      setMessage(
+        '起動後に対象素材または実行条件の状態が変化しました。安全のため処理を中断しました。ツールを閉じて再実行してください。' +
+        (!fresh.ok && fresh.message ? ' (' + fresh.message.replace(/\n/g, ' ') + ')' : ''),
+        'error'
+      );
+      $('btn-run').style.display = 'none';
+      $('config-area').style.opacity = '.55';
+      Array.from(shadow.querySelectorAll('input')).forEach(function (el) { el.disabled = true; });
+      $('footer-note').textContent = 'データは変更していません。ツールを閉じて再実行してください。';
+      return;
+    }
+
+    // 最新DOM参照を処理に使う。スナップショットは同一なので対象内容は起動時と一致している。
+    currentContext = fresh;
+    running = true;
+    ensureTimer();
+    installExecutionGuard();
+
+    $('btn-x').disabled = true;
+    $('btn-close').disabled = true;
+    $('btn-close').style.display = 'none';
+    $('btn-run').disabled = true;
+    $('btn-run').style.display = 'none';
+    Array.from(shadow.querySelectorAll('input')).forEach(function (el) { el.disabled = true; });
+    $('config-area').style.opacity = '.58';
+    $('state-title').textContent = '削除日・預入日を一括設定しています';
+    $('footer-note').textContent = '処理完了までこのタブを閉じたり、webCVを操作しないでください。';
+    setMessage('実行中はwebCVの背後画面を操作できません。進捗と結果はこの一覧へ随時反映されます。', 'info');
+
+    // 最新Contextでも分類結果は同一のため、行モデルのorderをそのまま利用できる。
+    installWindowOpenHook();
+    var fatalRunError = null;
+
+    try {
+      for (var i = 0; i < currentContext.targets.length; i++) {
+        var item = currentContext.targets[i];
+        var result = null;
+
+        for (var attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+          try {
+            if (attempt > 1) {
+              setPhase(item, '再試行のため選択状態をリセットしています', attempt);
+              var other = currentContext.targets.find(function (t) { return t !== item; }) ||
+                currentContext.duplicates[0] || currentContext.excluded[0];
+              if (other) {
+                clickSequence(other.tile.querySelector('img') || other.tile, false);
+                await sleep(700);
+              }
+            }
+
+            result = await processOne(item, mode, del, dep, attempt);
+            if (attempt > 1) {
+              result.reason = (result.reason ? result.reason + ' / ' : '') + 'リトライで成功';
+            }
+            break;
+          } catch (e) {
+            var msg = String((e && e.message) || e);
+            console.warn('[' + item.no + '] 試行 ' + attempt + ' 失敗: ' + msg);
+            result = { status: '失敗', delNote: '-', depNote: '-', reason: msg };
+            destroyCaptured();
+
+            if (attempt < MAX_ATTEMPTS) {
+              updateRow(item.order, {
+                final: false,
+                status: '1回目失敗',
+                statusClass: 'processing',
+                delNote: '-',
+                depNote: '-',
+                reason: msg + ' / 再試行します'
+              });
+            }
+            await sleep(1000);
+          }
+        }
+
+        var statusClass = result.status === '成功' ? 'success' :
+          (result.status === '失敗' ? 'fail' : 'skip');
+        updateRow(item.order, {
+          final: true,
+          status: result.status,
+          statusClass: statusClass,
+          delNote: result.delNote,
+          depNote: result.depNote,
+          reason: result.reason || ''
+        });
+
+        await sleep(BETWEEN_MATERIALS_MS);
+      }
+    } catch (e) {
+      fatalRunError = e;
+    } finally {
+      restoreWindowOpen();
+      destroyCaptured();
+      finishTimer();
+      running = false;
+      removeExecutionGuard();
+    }
+
+    if (fatalRunError) {
+      $('state-title').textContent = '処理中に予期しないエラーが発生しました';
+      $('current').textContent = '';
+      setMessage(String((fatalRunError && fatalRunError.message) || fatalRunError), 'error');
+      $('footer-note').textContent = '一覧の状態を確認し、失敗・未完了素材は個別に確認してください。';
+    } else {
+      $('state-title').textContent = '一括設定が完了しました';
+      $('current').textContent = '';
+      setMessage('', 'info');
+      $('footer-note').textContent = '結果一覧を確認してください。失敗がある場合は対象素材を個別に確認してください。';
+    }
+
+    $('btn-x').disabled = false;
+    $('btn-close').disabled = false;
+    $('btn-close').style.display = '';
+    $('btn-run').style.display = 'none';
+
+    // 画面に表示している全素材をそのまま結果として保存する。
+    // 予期しない中断があった場合も「処理中 / 待機中」の行を欠落させない。
+    var results = rowModels.map(function (r) {
+      return {
+        order: r.order,
+        no: r.no,
+        status: r.status,
+        delNote: r.delNote,
+        depNote: r.depNote,
+        reason: r.reason
+      };
+    }).sort(function (a, b) { return a.order - b.order; });
+
+    window[RESULT_GLOBAL] = results;
+    console.log('===== 削除日/預入日 一括設定 結果 =====');
+    console.table(results.map(function (r) {
+      return {
+        素材番号: r.no,
+        結果: r.status,
+        削除日: r.delNote,
+        預入日: r.depNote,
+        備考: r.reason
+      };
+    }));
+    updateSummary();
+  }
+
+  // ===== 公開 ============================================================== 
+  window[TOOL_GLOBAL] = {
+    version: TOOL_VERSION,
+    show: showFresh,
+    destroy: function () {
+      if (running) return false;
+      removeExecutionGuard();
+      restoreWindowOpen();
+      destroyCaptured();
+      finishTimer();
+      if (host) host.remove();
+      host = null;
+      shadow = null;
+      currentContext = null;
+      launchSnapshot = null;
+      rowModels = [];
+      rowEls.clear();
+      try { delete window[TOOL_GLOBAL]; } catch (e) { window[TOOL_GLOBAL] = null; }
+      return true;
+    },
+    get running() { return running; }
+  };
+
+  showFresh();
+})();
