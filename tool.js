@@ -1,7 +1,7 @@
 /**
  * ============================================================================
  * webCV 削除日延長バルス
- * Version 1.0.6
+ * Version 1.0.7
  * ============================================================================
  * targetCode.js v5 の更新エンジンをベースに、ブックマークレット配布用のUIを追加。
  *
@@ -12,7 +12,7 @@
  * - 「CV収録送出」グループ選択時のみ実行
  * - 削除日のみ / 削除日+預入日の2モード
  * - 削除日は既存値以上の場合のみ処理（前倒し禁止・既存値空欄は素材全体をスキップ）
- * - コンテナ画面では削除済素材（サムネイル枠src空 + 素材タイトル空）を事前判定してスキップ
+ * - コンテナ画面では削除済素材を事前判定してスキップ（src属性なし/空を同一扱い。タイトル取得可能時は空も確認）
  * - 削除日・預入日はツール実行日以降のみ選択可能
  * - 削除日 > 預入日 を必須条件とする
  * - 実行直前に対象スナップショットを再検証し、変化があれば中断
@@ -24,7 +24,7 @@
 (function () {
   'use strict';
 
-  var TOOL_VERSION = '1.0.6';
+  var TOOL_VERSION = '1.0.7';
   var TOOL_GLOBAL = '__cvDateBatchTool';
   var RESULT_GLOBAL = '__cvDeleteDateResults';
 
@@ -198,13 +198,20 @@
     var thumbnail = findMaterialThumbnailFrame(scope);
     if (!thumbnail) return false;
 
-    // img.src は空属性をページURLへ解決する場合があるため、属性の生値で判定する。
+    // 実機では削除済素材のサムネイル枠は src="" だけでなく、
+    // src 属性そのものが存在しない場合もある。img.src はページURLへ解決されるため使わず、
+    // getAttribute('src') の null / 空文字 / 空白のみをすべて「サムネイル枠が空」とみなす。
     var src = thumbnail.getAttribute('src');
-    if (src == null || String(src).trim() !== '') return false;
+    var srcEmpty = (src == null) || String(src).trim() === '';
+    if (!srcEmpty) return false;
 
     var title = getMaterialTitleForDeletedCheck(scope, viewMode);
-    // リスト表示で素材タイトル列が非表示なら、誤スキップ防止のため削除済と断定しない。
-    return title.available && title.value === '';
+    if (title.available) return title.value === '';
+
+    // リスト表示では「表示項目設定」により素材タイトル列自体がDOMから消える。
+    // この場合はタイトル条件を観測できないため、実機で削除済判定に有効と確認した
+    // サムネイル枠src未設定/空を縮退条件として削除済扱いにする。
+    return viewMode === 'list';
   }
 
   function makeUnknownFingerprint(scope, order) {
