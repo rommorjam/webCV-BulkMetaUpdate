@@ -1,12 +1,12 @@
 /**
  * ============================================================================
- * webCV 削除日/預入日 一括設定ツール
- * Version 1.0.2
+ * webCV削除延長バルス
+ * Version 1.0.3
  * ============================================================================
  * targetCode.js v5 の更新エンジンをベースに、ブックマークレット配布用のUIを追加。
  *
  * 主要仕様:
- * - 素材検索画面 / コンテナ画面に対応
+ * - 素材検索画面 / コンテナ画面のサムネイル表示・リスト表示に対応
  * - 2画面モードでは実行不可
  * - 「CV収録送出」グループ選択時のみ実行
  * - 削除日のみ / 削除日+預入日の2モード
@@ -21,7 +21,7 @@
 (function () {
   'use strict';
 
-  var TOOL_VERSION = '1.0.2';
+  var TOOL_VERSION = '1.0.3';
   var TOOL_GLOBAL = '__cvDateBatchTool';
   var RESULT_GLOBAL = '__cvDeleteDateResults';
 
@@ -196,22 +196,69 @@
     };
   }
 
+  function getVisibleMaterialRoot(screen) {
+    var selector = screen === 'search' ? '#MaterialListPart' : '#materialListPart';
+    return Array.from(document.querySelectorAll(selector)).find(function (el) {
+      return visible(el);
+    }) || null;
+  }
+
   function collectTiles(screen) {
-    if (screen === 'search') {
-      return Array.from(document.querySelectorAll('#MaterialListPart .draggable-tag'))
-        .filter(function (t) { return t.getBoundingClientRect().width > 0; });
+    var root = getVisibleMaterialRoot(screen);
+    if (!root) {
+      return {
+        viewMode: 'unknown',
+        viewDesc: '表示モード不明',
+        elements: []
+      };
     }
 
-    return Array.from(document.querySelectorAll('#materialListPart .tableBorderBlack'))
-      .filter(function (t) {
-        return t.getBoundingClientRect().width > 0 &&
-          /FC\d+-W\d+/.test(t.innerText) &&
-          !(t.parentElement && t.parentElement.closest('.tableBorderBlack'));
+    // webCVはサムネイル/リスト両方のDOMを常時保持し、.d-none等で切り替える。
+    // さらにSPA遷移後は前画面のDOMが非表示のまま残るため、
+    // 「現在画面の可視root配下」かつ「可視のsearch-list」でリスト表示を判定する。
+    var listTable = Array.from(root.querySelectorAll('table.search-list')).find(function (table) {
+      return visible(table);
+    }) || null;
+
+    if (listTable) {
+      // ネストしたtableが将来セル内に追加されても拾わないよう、search-list直下のtbody.rowsだけを対象にする。
+      var rows = Array.from(listTable.tBodies || []).reduce(function (all, tbody) {
+        return all.concat(Array.from(tbody.rows || []));
+      }, []).filter(function (row) {
+        return visible(row);
       });
+      return {
+        viewMode: 'list',
+        viewDesc: 'リスト表示',
+        elements: rows
+      };
+    }
+
+    // サムネイル表示は実績のある現行セレクタを維持する。
+    if (screen === 'search') {
+      return {
+        viewMode: 'thumbnail',
+        viewDesc: 'サムネイル表示',
+        elements: Array.from(root.querySelectorAll('.draggable-tag'))
+          .filter(function (t) { return visible(t); })
+      };
+    }
+
+    return {
+      viewMode: 'thumbnail',
+      viewDesc: 'サムネイル表示',
+      elements: Array.from(root.querySelectorAll('.tableBorderBlack'))
+        .filter(function (t) {
+          return visible(t) &&
+            /FC\d+-W\d+/.test(t.innerText) &&
+            !(t.parentElement && t.parentElement.closest('.tableBorderBlack'));
+        })
+    };
   }
 
   function buildMaterialState(screen) {
-    var tiles = collectTiles(screen);
+    var collected = collectTiles(screen);
+    var tiles = collected.elements;
     if (tiles.length === 0) {
       return {
         ok: false,
@@ -226,11 +273,33 @@
       var isError = Array.from(tile.querySelectorAll('.badge')).some(function (b) {
         return /badgeOrange/.test(b.className) || /\bError\b/.test(b.innerText);
       });
+
+      // リスト表示では行そのものにdblclickしてもプレビューが開かない画面があるため、
+      // 行内の可視imgをプレビュー起動要素として明示的に保持する。
+      // サムネイル表示は現行どおり img があれば img、なければタイル自身を使う。
+      var previewTrigger = null;
+      if (collected.viewMode === 'list') {
+        previewTrigger = Array.from(tile.querySelectorAll('img')).find(function (img) {
+          return visible(img);
+        }) || null;
+      } else {
+        previewTrigger = tile.querySelector('img') || tile;
+      }
+
+      var unknownReason = '';
+      if (!noMatch) {
+        unknownReason = '素材番号を取得できない';
+      } else if (collected.viewMode === 'list' && !previewTrigger) {
+        unknownReason = 'プレビュー起動要素(img)を取得できない';
+      }
+
       return {
         order: order,
         tile: tile,
+        previewTrigger: previewTrigger,
         no: noMatch ? noMatch[0] : null,
         isError: isError,
+        unknownReason: unknownReason,
         kind: null
       };
     });
@@ -242,12 +311,14 @@
     var unknown = [];
 
     items.forEach(function (item) {
+      // Error判定は素材単位全体（リストなら行全体）をスコープにする。
+      // コンテナリストではErrorバッジが素材番号TDの外側に存在するため、この順序・スコープが必須。
       if (item.isError) {
         item.kind = 'excluded';
         excluded.push(item);
         return;
       }
-      if (!item.no) {
+      if (!item.no || (collected.viewMode === 'list' && !item.previewTrigger)) {
         item.kind = 'unknown';
         unknown.push(item);
         return;
@@ -265,12 +336,14 @@
     if (targets.length === 0) {
       return {
         ok: false,
-        message: '処理対象の素材がありません(全件 Error 除外または素材番号不明)。'
+        message: '処理対象の素材がありません(全件 Error 除外、素材番号不明、またはプレビュー起動要素不明)。'
       };
     }
 
     return {
       ok: true,
+      viewMode: collected.viewMode,
+      viewDesc: collected.viewDesc,
       items: items,
       targets: targets,
       duplicates: duplicates,
@@ -290,13 +363,15 @@
   function makeSnapshot(ctx) {
     return {
       screen: ctx.screen,
+      viewMode: ctx.viewMode,
       groupName: ctx.groupName,
       items: ctx.items.map(function (i) {
         return {
           order: i.order,
           no: i.no || null,
           isError: !!i.isError,
-          kind: i.kind
+          kind: i.kind,
+          hasPreviewTrigger: !!i.previewTrigger
         };
       })
     };
@@ -368,6 +443,7 @@
       '.message.show{display:block}',
       '.message.error{background:#fef2f2;border:1px solid #fecaca;color:#991b1b}',
       '.message.info{background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af}',
+      '.message.warn{background:#fffbeb;border:1px solid #fde68a;color:#92400e;font-weight:600}',
       '.list-wrap{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;background:#fff}',
       '.list-head,.result-row{display:grid;grid-template-columns:160px 150px 120px 120px minmax(240px,1fr);align-items:center}',
       '.list-head{flex:0 0 auto;background:#f1f5f9;border-bottom:1px solid #cbd5e1;font-size:11px;font-weight:700;color:#475569}',
@@ -394,9 +470,9 @@
       '@media(max-width:760px){.panel{height:94vh;max-width:98vw}.config{grid-template-columns:1fr 1fr}.mode-field{grid-column:1/-1}.list-head,.result-row{grid-template-columns:140px 130px 105px 105px minmax(210px,1fr)}}',
       '</style>',
       '<div class="overlay">',
-      '  <div class="panel" role="dialog" aria-modal="true" aria-label="webCV削除日延長バルス">',
+      '  <div class="panel" role="dialog" aria-modal="true" aria-label="webCV削除延長バルス">',
       '    <div class="titlebar">',
-      '      <h1>webCV削除日延長バルス</h1>',
+      '      <h1>webCV削除延長バルス</h1>',
       '      <span class="version">Ver. ' + TOOL_VERSION + '</span>',
       '      <button class="xbtn" id="btn-x" aria-label="閉じる" title="閉じる">×</button>',
       '    </div>',
@@ -505,9 +581,9 @@
     }
     if (item.kind === 'unknown') {
       return {
-        order: item.order, no: '(番号不明)', kind: item.kind, final: true,
+        order: item.order, no: item.no || '(番号不明)', kind: item.kind, final: true,
         status: 'スキップ', statusClass: 'skip', delNote: '-', depNote: '-',
-        reason: '素材番号を取得できない'
+        reason: item.unknownReason || '素材番号またはプレビュー起動要素を取得できない'
       };
     }
     return {
@@ -599,7 +675,7 @@
     var mode1 = shadow.querySelector('input[name="mode"][value="1"]');
     if (mode1) mode1.checked = true;
 
-    $('screen-info').textContent = '実行画面: ' + ctx.screenDesc;
+    $('screen-info').textContent = '実行画面: ' + ctx.screenDesc + ' / ' + ctx.viewDesc;
     $('detected-info').textContent =
       '認識: ' + ctx.items.length + '件 / 処理対象: ' + ctx.targets.length +
       '件 / Error除外: ' + ctx.excluded.length + '件 / 重複: ' + ctx.duplicates.length +
@@ -616,7 +692,14 @@
     $('state-title').textContent = '実行内容を確認してください';
     $('current').textContent = '';
     $('footer-note').textContent = '対象一覧と設定日を確認してから実行してください。';
-    setMessage('', 'info');
+    if (ctx.targets.length >= 100) {
+      setMessage(
+        '処理対象が' + ctx.targets.length + '件あります。完了まで長時間かかる可能性があります。対象件数を確認してから実行してください。',
+        'warn'
+      );
+    } else {
+      setMessage('', 'info');
+    }
     renderRows(ctx);
     validateConfig();
   }
@@ -824,12 +907,14 @@
     destroyCaptured();
 
     setPhase(item, '素材を開く準備中', attempt);
-    item.tile.scrollIntoView({ block: 'center' });
+    item.tile.scrollIntoView({ block: 'center', inline: 'nearest' });
     await sleep(300);
 
     setPhase(item, 'プレビューを開いています', attempt);
-    var img = item.tile.querySelector('img') || item.tile;
-    clickSequence(img, true);
+    if (!item.previewTrigger) {
+      throw new Error('プレビュー起動要素を取得できない');
+    }
+    clickSequence(item.previewTrigger, true);
     await waitFor(function () { return captured; }, STEP_TIMEOUT_MS,
       'プレビューが開かない(アプリが window.open を呼ばない)');
 
@@ -1085,11 +1170,19 @@
         for (var attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
           try {
             if (attempt > 1) {
-              setPhase(item, '再試行のため選択状態をリセットしています', attempt);
-              var other = currentContext.targets.find(function (t) { return t !== item; }) ||
-                currentContext.duplicates[0] || currentContext.excluded[0];
-              if (other) {
-                clickSequence(other.tile.querySelector('img') || other.tile, false);
+              setPhase(item, '再試行の準備をしています', attempt);
+
+              // サムネイル表示では、実績のある「別素材を1回クリックして選択状態をリセット」を維持する。
+              // リスト表示では行選択リセットの効果が実証されていないため、この手順には依存せず
+              // 同じpreviewTriggerへの再dblclickをそのまま再試行する。
+              if (currentContext.viewMode === 'thumbnail') {
+                var other = currentContext.targets.find(function (t) { return t !== item; }) ||
+                  currentContext.duplicates[0] || currentContext.excluded[0];
+                if (other && other.previewTrigger) {
+                  clickSequence(other.previewTrigger, false);
+                  await sleep(700);
+                }
+              } else {
                 await sleep(700);
               }
             }
