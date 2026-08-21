@@ -279,7 +279,7 @@
     if (!screen) {
       return {
         ok: false,
-        message: 'このツールは素材検索画面 (/material/search) または\nコンテナ画面 (/material/container) で実行してください。'
+        message: 'このツールは素材検索画面または\nコンテナ画面で実行してください。'
       };
     }
 
