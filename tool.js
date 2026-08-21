@@ -1,7 +1,7 @@
 /**
  * ============================================================================
  * webCV 削除日/預入日 一括設定ツール
- * Version 1.0.0
+ * Version 1.0.1
  * ============================================================================
  * targetCode.js v5 の更新エンジンをベースに、ブックマークレット配布用のUIを追加。
  *
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var TOOL_VERSION = '1.0.0';
+  var TOOL_VERSION = '1.0.1';
   var TOOL_GLOBAL = '__cvDateBatchTool';
   var RESULT_GLOBAL = '__cvDeleteDateResults';
 
@@ -169,7 +169,7 @@
     if (!screen) {
       return {
         ok: false,
-        message: 'このツールは素材検索画面 (/material/search) または\nコンテナ画面 (/material/container) で実行してください。'
+        message: 'このツールは素材検索画面または\nコンテナ画面で実行してください。'
       };
     }
 
@@ -307,7 +307,17 @@
 
   // ===== UI ==================================================================
   function createUi() {
-    if (host) return;
+    // Blazor enhanced navigation では、document/window を維持したまま body のDOMが
+    // 差し替えられ、ブックマークレットが追加したhostだけが除去されることがある。
+    // host参照が残っていてもDOM未接続ならstale状態なので、UIを完全に作り直す。
+    if (host && host.isConnected) return;
+    if (host) {
+      console.warn('[CV日付一括設定] UIホストがDOMから切り離されているため再構築します。');
+      try { host.remove(); } catch (e) { /* 既に切り離し済みなら無視 */ }
+      host = null;
+      shadow = null;
+      rowEls.clear();
+    }
 
     host = document.createElement('div');
     host.id = 'cv-date-batch-tool-host';
@@ -383,9 +393,9 @@
       '@media(max-width:760px){.panel{height:94vh;max-width:98vw}.config{grid-template-columns:1fr 1fr}.mode-field{grid-column:1/-1}.list-head,.result-row{grid-template-columns:140px 130px 105px 105px minmax(210px,1fr)}}',
       '</style>',
       '<div class="overlay">',
-      '  <div class="panel" role="dialog" aria-modal="true" aria-label="webCV 削除日・預入日 一括設定ツール">',
+      '  <div class="panel" role="dialog" aria-modal="true" aria-label="webCV削除日バルス">',
       '    <div class="titlebar">',
-      '      <h1>webCV 削除日・預入日 一括設定ツール</h1>',
+      '      <h1>webCV削除日バルス</h1>',
       '      <span class="version">Ver. ' + TOOL_VERSION + '</span>',
       '      <button class="xbtn" id="btn-x" aria-label="閉じる" title="閉じる">×</button>',
       '    </div>',
@@ -396,7 +406,7 @@
       '        <label><span class="field-label">削除日</span><input type="date" id="delete-date"></label>',
       '        <label><span class="field-label">預入日</span><input type="date" id="deposit-date" disabled></label>',
       '      </div>',
-      '      <div class="rule">日付ルール: <strong>削除日 &gt; 預入日</strong>。モード2ではこの条件を満たす日付のみ実行できます。</div>',
+      '      <div class="rule">日付ルール: <strong>削除日 &gt; 預入日</strong>。「削除日＋預入日更新」ではこの条件を満たす日付のみ実行できます。</div>',
       '      <div class="validation" id="validation"></div>',
       '    </div>',
       '    <div class="summary">',
@@ -612,6 +622,12 @@
 
   function showFresh() {
     if (running) {
+      // 実行中にBlazor enhanced navigation等でhostだけDOMから外れた場合は、
+      // UIを再生成せず同じhostを再接続する。これにより進捗・結果・イベント状態を保持する。
+      if (host && !host.isConnected) {
+        console.warn('[CV日付一括設定] 実行中のUIホストがDOMから切り離されたため再接続します。');
+        (document.body || document.documentElement).appendChild(host);
+      }
       if (host) host.style.display = '';
       return;
     }
