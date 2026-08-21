@@ -1,7 +1,7 @@
 /**
  * ============================================================================
  * webCV 削除日/預入日 一括設定ツール
- * Version 1.0.1
+ * Version 1.0.2
  * ============================================================================
  * targetCode.js v5 の更新エンジンをベースに、ブックマークレット配布用のUIを追加。
  *
@@ -10,6 +10,7 @@
  * - 2画面モードでは実行不可
  * - 「CV収録送出」グループ選択時のみ実行
  * - 削除日のみ / 削除日+預入日の2モード
+ * - 削除日は既存値以上の場合のみ処理（前倒し禁止・既存値空欄は素材全体をスキップ）
  * - 削除日 > 預入日 を必須条件とする
  * - 実行直前に対象スナップショットを再検証し、変化があれば中断
  * - 実行中はwebCV画面操作をガードし、離脱時にブラウザ警告を表示
@@ -20,7 +21,7 @@
 (function () {
   'use strict';
 
-  var TOOL_VERSION = '1.0.1';
+  var TOOL_VERSION = '1.0.2';
   var TOOL_GLOBAL = '__cvDateBatchTool';
   var RESULT_GLOBAL = '__cvDeleteDateResults';
 
@@ -393,9 +394,9 @@
       '@media(max-width:760px){.panel{height:94vh;max-width:98vw}.config{grid-template-columns:1fr 1fr}.mode-field{grid-column:1/-1}.list-head,.result-row{grid-template-columns:140px 130px 105px 105px minmax(210px,1fr)}}',
       '</style>',
       '<div class="overlay">',
-      '  <div class="panel" role="dialog" aria-modal="true" aria-label="webCV削除日バルス">',
+      '  <div class="panel" role="dialog" aria-modal="true" aria-label="webCV削除日延長バルス">',
       '    <div class="titlebar">',
-      '      <h1>webCV削除日バルス</h1>',
+      '      <h1>webCV削除日延長バルス</h1>',
       '      <span class="version">Ver. ' + TOOL_VERSION + '</span>',
       '      <button class="xbtn" id="btn-x" aria-label="閉じる" title="閉じる">×</button>',
       '    </div>',
@@ -406,7 +407,7 @@
       '        <label><span class="field-label">削除日</span><input type="date" id="delete-date"></label>',
       '        <label><span class="field-label">預入日</span><input type="date" id="deposit-date" disabled></label>',
       '      </div>',
-      '      <div class="rule">日付ルール: <strong>削除日 &gt; 預入日</strong>。「削除日＋預入日更新」ではこの条件を満たす日付のみ実行できます。</div>',
+      '      <div class="rule">日付ルール: <strong>削除日 &gt; 預入日</strong>。「削除日+預入日を更新」ではこの条件を満たす日付のみ実行できます。</div>',
       '      <div class="validation" id="validation"></div>',
       '    </div>',
       '    <div class="summary">',
@@ -885,7 +886,34 @@
     var curDel = delInp.value;
     var curDep = depInp ? depInp.value : '';
 
+    // 削除日延長専用ルール:
+    // - 既存削除日が空欄の素材は、削除日・預入日とも変更せず素材全体をスキップする。
+    // - 指定削除日が既存削除日より前なら「前倒し」とみなし、預入日も含めて一切変更しない。
+    // - 指定削除日が既存削除日と同日なら延長条件を満たす。削除日は変更せず、
+    //   モード2では必要に応じて預入日のみ更新できる。
+    if (!curDel) {
+      await closePreview();
+      return {
+        status: 'スキップ',
+        delNote: '未変更',
+        depNote: '未変更',
+        reason: '既存削除日が未設定のため'
+      };
+    }
+
+    if (del.iso < curDel) {
+      await closePreview();
+      return {
+        status: 'スキップ',
+        delNote: '未変更',
+        depNote: '未変更',
+        reason: '削除日前倒し禁止: 既存削除日(' + displayIso(curDel) + ') > 指定削除日(' + del.disp + ')'
+      };
+    }
+
+    // ここまで到達した時点で「指定削除日 >= 既存削除日」= 削除日延長条件を満たす。
     // 絶対ルール: 最終状態で「削除日 > 預入日」を満たさない素材は変更しない。
+    var needDel = del.iso > curDel;
     var willSetDep = mode === '2' && depEditable;
     var finalDep = willSetDep ? dep.iso : curDep;
     if (finalDep && del.iso <= finalDep) {
@@ -898,7 +926,6 @@
       };
     }
 
-    var needDel = curDel !== del.iso;
     var needDep = willSetDep && curDep !== dep.iso;
     var depNote;
 
@@ -911,9 +938,9 @@
       await closePreview();
       return {
         status: 'スキップ(設定済み)',
-        delNote: '設定済み',
+        delNote: '変更なし',
         depNote: depNote,
-        reason: ''
+        reason: '指定削除日は既存削除日と同一'
       };
     }
 
@@ -964,9 +991,11 @@
 
     return {
       status: '成功',
-      delNote: needDel ? '設定' : '設定済み',
+      delNote: needDel ? '延長' : '変更なし',
       depNote: depNote,
-      reason: ''
+      reason: needDel
+        ? (needDep ? '削除日延長・預入日更新' : '削除日延長')
+        : '削除日変更なし・預入日のみ更新'
     };
   }
 

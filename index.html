@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>【webCV】削除日バルスツール — 配布ページ</title>
+<title>【webCV】削除日延長バルス — 配布ページ</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -60,8 +60,8 @@
 </head>
 <body>
 <div class="container">
-  <h1>【webCV】削除日バルス</h1>
-  <p class="lead">素材検索結果またはコンテナ内の素材に対し、削除日・預入日を一括設定するブックマークレットです。</p>
+  <h1>【webCV】削除日延長バルス</h1>
+  <p class="lead">素材検索結果またはコンテナ内の素材に対し、削除日を延長方向にのみ更新し、必要に応じて預入日も一括設定するブックマークレットです。</p>
 
   <div class="card">
     <h2>【初回のみ】ブックマークレットを登録</h2>
@@ -69,7 +69,7 @@
       <li>Chrome / Edge のブックマークバーを表示します（<code>Ctrl+Shift+B</code>）。</li>
       <li>下のボタンを<strong>ブックマークバーへドラッグ＆ドロップ</strong>します。</li>
     </ol>
-    <a class="bookmarklet" id="bookmarklet-link" href="#">削除日バルス</a>
+    <a class="bookmarklet" id="bookmarklet-link" href="#">削除日延長バルス</a>
     <p class="note">登録後の更新作業は不要です。ツール起動時に毎回最新の <code>tool.js</code> を読み込むため、管理者側で更新すると次回起動時から自動的に最新版が使用されます。</p>
   </div>
 
@@ -78,7 +78,7 @@
     <ol>
       <li>webCVで、素材検索結果を表示するか、対象コンテナを開いて素材を表示します。</li>
       <li>画面右上のグループが<strong>「CV収録送出」</strong>になっていることを確認します。</li>
-      <li>登録した「削除日バルス」をクリックします。</li>
+      <li>登録した「削除日延長バルス」をクリックします。</li>
       <li>処理モードと日付を確認し、「一括設定を実行」を押します。</li>
       <li>進捗・各素材の結果をツール画面で確認します。</li>
     </ol>
@@ -89,6 +89,8 @@
     <h2>主な仕様</h2>
     <ul>
       <li>初期値: 削除日＝実行日＋2日、預入日＝実行日＋1日</li>
+      <li>削除日更新ルール: <strong>指定削除日 ≧ 既存削除日</strong> の場合のみ処理（前倒しは素材全体をスキップ）</li>
+      <li>既存削除日が未設定の素材は、削除日・預入日とも更新せずスキップ</li>
       <li>日付ルール: <strong>削除日 &gt; 預入日</strong></li>
       <li>モード: 「削除日のみ」または「削除日＋預入日」</li>
       <li>預入日はアーカイブ対象で入力可能な素材のみ更新</li>
