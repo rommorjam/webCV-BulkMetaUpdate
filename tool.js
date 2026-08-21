@@ -1,12 +1,13 @@
 /**
  * ============================================================================
- * webCV 削除延長バルス
- * Version 1.0.4
+ * webCV 削除日延長バルス
+ * Version 1.0.5
  * ============================================================================
  * targetCode.js v5 の更新エンジンをベースに、ブックマークレット配布用のUIを追加。
  *
  * 主要仕様:
  * - 素材検索画面 / コンテナ画面のサムネイル表示・リスト表示に対応
+ * - 素材の存在検知を番号書式から分離し、素材番号は専用DOMから緩く取得・正規化
  * - 2画面モードでは実行不可
  * - 「CV収録送出」グループ選択時のみ実行
  * - 削除日のみ / 削除日+預入日の2モード
@@ -22,7 +23,7 @@
 (function () {
   'use strict';
 
-  var TOOL_VERSION = '1.0.4';
+  var TOOL_VERSION = '1.0.5';
   var TOOL_GLOBAL = '__cvDateBatchTool';
   var RESULT_GLOBAL = '__cvDeleteDateResults';
 
@@ -74,6 +75,112 @@
   // ===== 共通ユーティリティ ==================================================
   function visible(el) {
     return !!el && el.getBoundingClientRect().width > 0;
+  }
+
+  // 素材番号は将来の採番体系変更に耐えるため、意味的な採番規則は検証しない。
+  // DOM上の「素材番号専用位置」から取得した値だけを対象に、
+  // 表示用ハイフン/空白を除去・大文字化した半角英数字6〜20文字を内部キーとする。
+  var MATERIAL_NO_MIN_LEN = 6;
+  var MATERIAL_NO_MAX_LEN = 20;
+
+  function normalizeMaterialNo(raw) {
+    if (raw == null) return null;
+    var display = String(raw).trim().replace(/\s+/g, '').toUpperCase();
+    if (!display) return null;
+    var key = display.replace(/-/g, '');
+    if (key.length < MATERIAL_NO_MIN_LEN || key.length > MATERIAL_NO_MAX_LEN) return null;
+    if (!/^[A-Z0-9]+$/.test(key)) return null;
+    return { key: key, display: display, raw: String(raw).trim() };
+  }
+
+  function uniqueMaterialCandidates(candidates) {
+    var byKey = new Map();
+    candidates.forEach(function (c) {
+      if (c && c.key && !byKey.has(c.key)) byKey.set(c.key, c);
+    });
+    return Array.from(byKey.values());
+  }
+
+  function getMaterialNoFromAnchor(scope) {
+    if (!scope) return { value: null, reason: '素材番号DOMを取得できない' };
+    var candidates = [];
+    Array.from(scope.querySelectorAll('span.h6')).forEach(function (h6) {
+      var parent = h6.parentElement;
+      if (!parent) return;
+      var prefix = Array.from(parent.childNodes)
+        .filter(function (n) { return n.nodeType === 3; })
+        .map(function (n) { return (n.textContent || '').trim(); })
+        .join('');
+      var raw = prefix + (h6.textContent || '').trim();
+      var normalized = normalizeMaterialNo(raw);
+      if (normalized) candidates.push(normalized);
+    });
+    candidates = uniqueMaterialCandidates(candidates);
+    if (candidates.length === 1) return { value: candidates[0], source: 'span.h6' };
+    if (candidates.length > 1) return { value: null, reason: '素材番号候補が複数見つかった' };
+    return { value: null, reason: '素材番号専用DOMから有効な番号を取得できない' };
+  }
+
+  function getMaterialNoFromListHeader(row) {
+    if (!row || !row.closest) return { value: null, reason: '素材番号列を特定できない' };
+    var table = row.closest('table.search-list');
+    if (!table) return { value: null, reason: '素材番号列を特定できない' };
+    var headers = Array.from(table.querySelectorAll('thead th, thead td')).filter(function (cell) {
+      return (cell.innerText || cell.textContent || '').trim() === '素材番号';
+    });
+    if (headers.length !== 1) {
+      return { value: null, reason: headers.length > 1 ? '素材番号列が複数見つかった' : '素材番号列を特定できない' };
+    }
+    var index = headers[0].cellIndex;
+    var cell = row.cells && row.cells[index];
+    if (!cell) return { value: null, reason: '素材番号セルを取得できない' };
+    var normalized = normalizeMaterialNo((cell.textContent || '').trim());
+    return normalized ? { value: normalized, source: 'header-column' }
+      : { value: null, reason: '素材番号セルの値を正規化できない' };
+  }
+
+  function getMaterialNo(scope, viewMode) {
+    var anchored = getMaterialNoFromAnchor(scope);
+    if (anchored.value) return anchored;
+    if (viewMode === 'list') {
+      var fallback = getMaterialNoFromListHeader(scope);
+      if (fallback.value) return fallback;
+      return { value: null, reason: anchored.reason + ' / ' + fallback.reason };
+    }
+    return anchored;
+  }
+
+  function findPreviewTrigger(scope, viewMode) {
+    if (!scope) return null;
+    var photo = scope.querySelector('img.photo');
+    if (photo) return photo;
+    var thumbnailImage = Array.from(scope.querySelectorAll('img')).find(function (img) {
+      var src = String(img.getAttribute('src') || '');
+      return /\/Thumbnail\//i.test(src) && !/ThumbnailMark/i.test(src);
+    });
+    if (thumbnailImage) return thumbnailImage;
+    if (viewMode === 'list') return null;
+    return scope.querySelector('img') || scope;
+  }
+
+  function makeUnknownFingerprint(scope, order) {
+    var text = String((scope && (scope.innerText || scope.textContent)) || '')
+      .replace(/\s+/g, ' ').trim().slice(0, 240);
+    var hash = 2166136261;
+    for (var i = 0; i < text.length; i++) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return 'unknown:' + order + ':' + (hash >>> 0).toString(16);
+  }
+
+  function textContainsMaterialKey(text, key) {
+    if (!text || !key) return false;
+    var tokens = String(text).toUpperCase().match(/[A-Z0-9]+(?:-[A-Z0-9]+)*/g) || [];
+    return tokens.some(function (token) {
+      var normalized = normalizeMaterialNo(token);
+      return !!normalized && normalized.key === key;
+    });
   }
 
   function addLocalDays(baseDate, days) {
@@ -172,7 +279,7 @@
     if (!screen) {
       return {
         ok: false,
-        message: 'このツールは素材検索画面または\nコンテナ画面で実行してください。'
+        message: 'このツールは素材検索画面 (/material/search) または\nコンテナ画面 (/material/container) で実行してください。'
       };
     }
 
@@ -223,7 +330,6 @@
     }) || null;
 
     if (listTable) {
-      // ネストしたtableが将来セル内に追加されても拾わないよう、search-list直下のtbody.rowsだけを対象にする。
       var rows = Array.from(listTable.tBodies || []).reduce(function (all, tbody) {
         return all.concat(Array.from(tbody.rows || []));
       }, []).filter(function (row) {
@@ -236,7 +342,6 @@
       };
     }
 
-    // サムネイル表示は実績のある現行セレクタを維持する。
     if (screen === 'search') {
       return {
         viewMode: 'thumbnail',
@@ -246,15 +351,29 @@
       };
     }
 
+    // コンテナ・サムネイルでは素材番号の書式を素材収集条件にしない。
+    // 実測された素材単位 div.nonSelect.d-block を優先する。
+    var cards = Array.from(root.querySelectorAll('div.nonSelect.d-block')).filter(function (el) {
+      var hasCardStructure = el.matches('.tableBorderBlack') || !!el.querySelector('.tableBorderBlack') ||
+        !!el.querySelector('span.h6') || !!el.querySelector('img.photo');
+      return visible(el) && hasCardStructure &&
+        !(el.parentElement && el.parentElement.closest('div.nonSelect.d-block'));
+    });
+
+    // webCV改版でwrapperクラスが変わった場合の構造fallback。
+    // 番号文字列そのものではなく、素材番号アンカー/サムネイル構造で候補を拾う。
+    if (cards.length === 0) {
+      cards = Array.from(root.querySelectorAll('.tableBorderBlack')).filter(function (t) {
+        return visible(t) &&
+          !(t.parentElement && t.parentElement.closest('.tableBorderBlack')) &&
+          (!!t.querySelector('span.h6') || !!t.querySelector('img.photo'));
+      });
+    }
+
     return {
       viewMode: 'thumbnail',
       viewDesc: 'サムネイル表示',
-      elements: Array.from(root.querySelectorAll('.tableBorderBlack'))
-        .filter(function (t) {
-          return visible(t) &&
-            /FC\d+-W\d+/.test(t.innerText) &&
-            !(t.parentElement && t.parentElement.closest('.tableBorderBlack'));
-        })
+      elements: cards
     };
   }
 
@@ -271,35 +390,32 @@
     }
 
     var items = tiles.map(function (tile, order) {
-      var noMatch = tile.innerText.match(/FC\d+-W\d+/);
+      var noInfo = getMaterialNo(tile, collected.viewMode);
+      var noValue = noInfo.value;
       var isError = Array.from(tile.querySelectorAll('.badge')).some(function (b) {
         return /badgeOrange/.test(b.className) || /\bError\b/.test(b.innerText);
       });
-
-      // リスト表示では行そのものにdblclickしてもプレビューが開かない画面があるため、
-      // 行内の可視imgをプレビュー起動要素として明示的に保持する。
-      // サムネイル表示は現行どおり img があれば img、なければタイル自身を使う。
-      var previewTrigger = null;
-      if (collected.viewMode === 'list') {
-        previewTrigger = Array.from(tile.querySelectorAll('img')).find(function (img) {
-          return visible(img);
-        }) || null;
-      } else {
-        previewTrigger = tile.querySelector('img') || tile;
-      }
+      var previewTrigger = findPreviewTrigger(tile, collected.viewMode);
 
       var unknownReason = '';
-      if (!noMatch) {
-        unknownReason = '素材番号を取得できない';
+      if (!noValue) {
+        unknownReason = noInfo.reason || '素材番号を取得できない';
       } else if (collected.viewMode === 'list' && !previewTrigger) {
-        unknownReason = 'プレビュー起動要素(img)を取得できない';
+        unknownReason = 'プレビュー起動要素(サムネイル画像)を取得できない';
       }
+
+      var fallbackText = String(tile.innerText || tile.textContent || '')
+        .split(/\r?\n/).map(function (v) { return v.trim(); }).filter(Boolean).slice(0, 2).join(' / ');
 
       return {
         order: order,
         tile: tile,
         previewTrigger: previewTrigger,
-        no: noMatch ? noMatch[0] : null,
+        no: noValue ? noValue.display : null,
+        noKey: noValue ? noValue.key : null,
+        noSource: noInfo.source || null,
+        fallbackLabel: fallbackText ? fallbackText.slice(0, 90) : '(番号不明 #' + (order + 1) + ')',
+        fingerprint: noValue ? 'material:' + noValue.key : makeUnknownFingerprint(tile, order),
         isError: isError,
         unknownReason: unknownReason,
         kind: null
@@ -313,34 +429,25 @@
     var unknown = [];
 
     items.forEach(function (item) {
-      // Error判定は素材単位全体（リストなら行全体）をスコープにする。
-      // コンテナリストではErrorバッジが素材番号TDの外側に存在するため、この順序・スコープが必須。
       if (item.isError) {
         item.kind = 'excluded';
         excluded.push(item);
         return;
       }
-      if (!item.no || (collected.viewMode === 'list' && !item.previewTrigger)) {
+      if (!item.noKey || (collected.viewMode === 'list' && !item.previewTrigger)) {
         item.kind = 'unknown';
         unknown.push(item);
         return;
       }
-      if (seenNo.has(item.no)) {
+      if (seenNo.has(item.noKey)) {
         item.kind = 'duplicate';
         duplicates.push(item);
         return;
       }
-      seenNo.add(item.no);
+      seenNo.add(item.noKey);
       item.kind = 'target';
       targets.push(item);
     });
-
-    if (targets.length === 0) {
-      return {
-        ok: false,
-        message: '処理対象の素材がありません(全件 Error 除外、素材番号不明、またはプレビュー起動要素不明)。'
-      };
-    }
 
     return {
       ok: true,
@@ -371,6 +478,8 @@
         return {
           order: i.order,
           no: i.no || null,
+          noKey: i.noKey || null,
+          fingerprint: i.fingerprint,
           isError: !!i.isError,
           kind: i.kind,
           hasPreviewTrigger: !!i.previewTrigger
@@ -472,9 +581,9 @@
       '@media(max-width:760px){.panel{height:94vh;max-width:98vw}.config{grid-template-columns:1fr 1fr}.mode-field{grid-column:1/-1}.list-head,.result-row{grid-template-columns:140px 130px 105px 105px minmax(210px,1fr)}}',
       '</style>',
       '<div class="overlay">',
-      '  <div class="panel" role="dialog" aria-modal="true" aria-label="webCV 削除延長バルス">',
+      '  <div class="panel" role="dialog" aria-modal="true" aria-label="webCV 削除日延長バルス">',
       '    <div class="titlebar">',
-      '      <h1>webCV 削除延長バルス</h1>',
+      '      <h1>webCV 削除日延長バルス</h1>',
       '      <span class="version">Ver. ' + TOOL_VERSION + '</span>',
       '      <button class="xbtn" id="btn-x" aria-label="閉じる" title="閉じる">×</button>',
       '    </div>',
@@ -555,7 +664,9 @@
     var dep = $('deposit-date').value;
     var message = '';
 
-    if (!del) {
+    if (currentContext && currentContext.targets.length === 0) {
+      message = '処理対象の素材がありません。番号不明・Error除外などの一覧を確認してください。';
+    } else if (!del) {
       message = '削除日を選択してください。';
     } else if (executionDateIso && del < executionDateIso) {
       message = '削除日はツール実行日（' + displayIso(executionDateIso) + '）以降の日付を選択してください。';
@@ -582,14 +693,14 @@
     }
     if (item.kind === 'excluded') {
       return {
-        order: item.order, no: item.no || '(番号不明)', kind: item.kind, final: true,
+        order: item.order, no: item.no || item.fallbackLabel || '(番号不明)', kind: item.kind, final: true,
         status: '除外', statusClass: 'excluded', delNote: '-', depNote: '-',
         reason: 'Error バッジのため対象外'
       };
     }
     if (item.kind === 'unknown') {
       return {
-        order: item.order, no: item.no || '(番号不明)', kind: item.kind, final: true,
+        order: item.order, no: item.no || item.fallbackLabel || '(番号不明)', kind: item.kind, final: true,
         status: 'スキップ', statusClass: 'skip', delNote: '-', depNote: '-',
         reason: item.unknownReason || '素材番号またはプレビュー起動要素を取得できない'
       };
@@ -703,7 +814,12 @@
     $('state-title').textContent = '実行内容を確認してください';
     $('current').textContent = '';
     $('footer-note').textContent = '対象一覧と設定日を確認してから実行してください。';
-    if (ctx.targets.length >= 100) {
+    if (ctx.targets.length === 0) {
+      setMessage(
+        '素材は' + ctx.items.length + '件認識しましたが、処理対象は0件です。番号不明・Error除外などの一覧を確認してください。',
+        'warn'
+      );
+    } else if (ctx.targets.length >= 100) {
       setMessage(
         '処理対象が' + ctx.targets.length + '件あります。完了まで長時間かかる可能性があります。対象件数を確認してから実行してください。',
         'warn'
@@ -911,7 +1027,7 @@
       statusClass: 'processing',
       reason: text
     });
-    $('current').textContent = '現在処理中: ' + item.no + ' / ' + text;
+    $('current').textContent = '現在処理中: ' + (item.no || item.fallbackLabel) + ' / ' + text;
   }
 
   async function processOne(item, mode, del, dep, attempt) {
@@ -936,14 +1052,15 @@
       if (d.location && d.location.pathname === '/Error') {
         throw fatalError('プレビューがエラーページに遷移した');
       }
-      return d.readyState === 'complete' && /FC\d+-W\d+/.test(d.body.innerText);
-    }, STEP_TIMEOUT_MS, 'プレビューの読み込み');
+      if (d.readyState !== 'complete' || !d.body) return false;
+      return textContainsMaterialKey(d.body.innerText || d.body.textContent || '', item.noKey);
+    }, STEP_TIMEOUT_MS, 'プレビュー上で対象素材番号を確認できない');
 
-    var shownMatch = getDoc().body.innerText.match(/FC\d+-W\d+/);
-    if (!shownMatch) throw new Error('プレビュー上の素材番号を取得できない');
-    var shown = shownMatch[0];
-    if (shown !== item.no) {
-      throw new Error('別素材 (' + shown + ') が開いた');
+    var previewDoc = getDoc();
+    var previewText = previewDoc && previewDoc.body
+      ? (previewDoc.body.innerText || previewDoc.body.textContent || '') : '';
+    if (!textContainsMaterialKey(previewText, item.noKey)) {
+      throw new Error('プレビュー上で対象素材番号(' + item.no + ')を確認できない');
     }
 
     setPhase(item, '管理情報タブへ切り替えています', attempt);
@@ -1205,7 +1322,7 @@
             break;
           } catch (e) {
             var msg = String((e && e.message) || e);
-            console.warn('[' + item.no + '] 試行 ' + attempt + ' 失敗: ' + msg);
+            console.warn('[' + (item.no || item.fallbackLabel) + '] 試行 ' + attempt + ' 失敗: ' + msg);
             result = { status: '失敗', delNote: '-', depNote: '-', reason: msg };
             destroyCaptured();
 
