@@ -28,7 +28,7 @@
 (function () {
   'use strict';
 
-  var TOOL_VERSION = '1.0.8';
+  var TOOL_VERSION = '1.0.9';
   var TOOL_GLOBAL = '__cvDateBatchTool';
   var RESULT_GLOBAL = '__cvDeleteDateResults';
 
@@ -759,7 +759,7 @@
       ':host{all:initial}',
       '*{box-sizing:border-box}',
       '.overlay{position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483647;background:rgba(15,23,42,.52);display:flex;align-items:center;justify-content:center;padding:18px;font-family:"Hiragino Sans","Yu Gothic UI","Meiryo",sans-serif;color:#1e293b;font-size:14px}',
-      '.panel{width:980px;max-width:96vw;height:88vh;max-height:900px;min-height:560px;background:#fff;border-radius:12px;box-shadow:0 24px 80px rgba(0,0,0,.42);display:flex;flex-direction:column;overflow:hidden}',
+      '.panel{width:1180px;max-width:96vw;height:88vh;max-height:900px;min-height:560px;background:#fff;border-radius:12px;box-shadow:0 24px 80px rgba(0,0,0,.42);display:flex;flex-direction:column;overflow:hidden}',
       '.titlebar{flex:0 0 auto;background:#0f766e;color:#fff;padding:13px 17px;display:flex;align-items:center;gap:12px}',
       '.titlebar h1{font-size:16px;font-weight:700;margin:0;flex:1}',
       '.version{font-size:11px;opacity:.82}',
@@ -798,11 +798,11 @@
       '.message.error{background:#fef2f2;border:1px solid #fecaca;color:#991b1b}',
       '.message.info{background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af}',
       '.message.warn{background:#fffbeb;border:1px solid #fde68a;color:#92400e;font-weight:600}',
-      '.list-wrap{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;background:#fff}',
-      '.list-head,.result-row{display:grid;grid-template-columns:160px 150px 120px 120px minmax(240px,1fr);align-items:center}',
-      '.list-head{flex:0 0 auto;background:#f1f5f9;border-bottom:1px solid #cbd5e1;font-size:11px;font-weight:700;color:#475569}',
+      '.list-wrap{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;background:#fff;overflow-x:auto;overflow-y:hidden}',
+      '.list-head,.result-row{display:grid;grid-template-columns:160px 200px 150px 120px 120px minmax(240px,1fr);align-items:center}',
+      '.list-head{flex:0 0 auto;min-width:990px;background:#f1f5f9;border-bottom:1px solid #cbd5e1;font-size:11px;font-weight:700;color:#475569}',
       '.list-head>div{padding:8px 10px;border-right:1px solid #e2e8f0}',
-      '.list-scroll{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain}',
+      '.list-scroll{flex:1 1 auto;min-height:0;min-width:990px;overflow-y:auto;overscroll-behavior:contain}',
       '.result-row{min-height:42px;border-bottom:1px solid #eef2f7;font-size:12px}',
       '.result-row>div{padding:8px 10px;min-width:0;overflow-wrap:anywhere}',
       '.result-row.processing{background:#ecfeff}',
@@ -811,6 +811,7 @@
       '.result-row.skip{background:#fffbeb}',
       '.result-row.excluded{background:#f8fafc;color:#64748b}',
       '.material{font-family:"MS Gothic","Consolas",monospace;font-weight:700}',
+      '.material-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
       '.status-badge{display:inline-flex;align-items:center;gap:5px;font-weight:700}',
       '.muted{color:#94a3b8}',
       '.footer{flex:0 0 auto;border-top:1px solid #e2e8f0;padding:10px 16px;background:#fff;display:flex;align-items:center;gap:8px}',
@@ -821,7 +822,7 @@
       '.btn-primary:hover{background:#0d5f59}',
       '.btn:disabled{opacity:.45;cursor:not-allowed}',
       '.btn:disabled:hover{background:inherit}',
-      '@media(max-width:760px){.panel{height:94vh;max-width:98vw}.config{grid-template-columns:1fr 1fr}.mode-field{grid-column:1/-1}.list-head,.result-row{grid-template-columns:140px 130px 105px 105px minmax(210px,1fr)}}',
+      '@media(max-width:760px){.panel{height:94vh;max-width:98vw}.config{grid-template-columns:1fr 1fr}.mode-field{grid-column:1/-1}.list-head,.result-row{grid-template-columns:140px 180px 130px 105px 105px minmax(210px,1fr)}.list-head,.list-scroll{min-width:870px}}',
       '</style>',
       '<div class="overlay">',
       '  <div class="panel" role="dialog" aria-modal="true" aria-label="webCV 削除日延長バルス">',
@@ -847,7 +848,7 @@
       '      <div class="message" id="message"></div>',
       '    </div>',
       '    <div class="list-wrap">',
-      '      <div class="list-head"><div>素材番号</div><div>結果 / 状態</div><div>削除日</div><div>預入日</div><div>詳細</div></div>',
+      '      <div class="list-head"><div>素材番号</div><div>素材タイトル</div><div>結果 / 状態</div><div>削除日</div><div>預入日</div><div>詳細</div></div>',
       '      <div class="list-scroll" id="list-scroll"></div>',
       '    </div>',
       '    <div class="footer">',
@@ -970,7 +971,11 @@
 
   function renderRows(ctx) {
     rowEls.clear();
-    rowModels = ctx.items.map(rowInitialModel).sort(function (a, b) { return a.order - b.order; });
+    rowModels = ctx.items.map(function (item) {
+      var model = rowInitialModel(item);
+      model.title = item.title == null ? '' : String(item.title);
+      return model;
+    }).sort(function (a, b) { return a.order - b.order; });
     var list = $('list-scroll');
     list.innerHTML = '';
 
@@ -980,6 +985,7 @@
       row.dataset.order = String(model.order);
       row.innerHTML =
         '<div class="material"></div>' +
+        '<div class="material-title"></div>' +
         '<div class="status"></div>' +
         '<div class="del"></div>' +
         '<div class="dep"></div>' +
@@ -997,6 +1003,14 @@
     if (!row) return;
     row.className = 'result-row ' + (model.statusClass || '');
     row.querySelector('.material').textContent = model.no;
+    var titleEl = row.querySelector('.material-title');
+    var fullTitle = model.title ? String(model.title) : '';
+    titleEl.textContent = fullTitle || '—';
+    if (fullTitle) {
+      titleEl.setAttribute('title', fullTitle);
+    } else {
+      titleEl.removeAttribute('title');
+    }
     row.querySelector('.status').textContent = model.status;
     row.querySelector('.del').textContent = model.delNote && model.delNote !== '-' ? model.delNote : '—';
     row.querySelector('.dep').textContent = model.depNote && model.depNote !== '-' ? model.depNote : '—';
