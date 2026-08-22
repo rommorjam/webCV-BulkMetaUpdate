@@ -1,18 +1,22 @@
 /**
  * ============================================================================
  * webCV 削除日延長バルス
- * Version 1.0.7
+ * Version 1.0.8
  * ============================================================================
  * targetCode.js v5 の更新エンジンをベースに、ブックマークレット配布用のUIを追加。
  *
  * 主要仕様:
- * - 素材検索画面 / コンテナ画面のサムネイル表示・リスト表示に対応
+ * - 素材検索画面（元素材・OA素材）/ コンテナ画面のサムネイル表示・リスト表示に対応
+ * - 素材検索は元素材のみ / OA素材のみ / 両方の検索結果を処理可能
  * - 素材の存在検知を番号書式から分離し、素材番号は専用DOMから緩く取得・正規化
  * - 2画面モードでは実行不可
  * - 「CV収録送出」グループ選択時のみ実行
  * - 削除日のみ / 削除日+預入日の2モード
  * - 削除日は既存値以上の場合のみ処理（前倒し禁止・既存値空欄は素材全体をスキップ）
- * - コンテナ画面では削除済素材を事前判定してスキップ（src属性なし/空を同一扱い。タイトル取得可能時は空も確認）
+ * - Error を最優先で除外し、素材タイトル空は全画面・全素材で事前スキップ
+ * - サムネイル枠src空 + 素材タイトル空は、ユーザー表示上「削除済み」としてスキップ
+ * - Not Filed サムネイルでも素材タイトル有 + Errorなしなら通常素材と同じ処理対象
+ * - リスト表示では「素材タイトル」列の表示を必須とし、列が無ければ実行しない
  * - 削除日・預入日はツール実行日以降のみ選択可能
  * - 削除日 > 預入日 を必須条件とする
  * - 実行直前に対象スナップショットを再検証し、変化があれば中断
@@ -24,7 +28,7 @@
 (function () {
   'use strict';
 
-  var TOOL_VERSION = '1.0.7';
+  var TOOL_VERSION = '1.0.8';
   var TOOL_GLOBAL = '__cvDateBatchTool';
   var RESULT_GLOBAL = '__cvDeleteDateResults';
 
@@ -164,15 +168,15 @@
     return scope.querySelector('img') || scope;
   }
 
-  // 削除済素材の判定は、既存のプレビュー起動要素取得とは分離する。
-  // カット素材由来の削除済ではハサミアイコンにも photo クラスが付くため、
+  // タイトル空・白サムネイル判定は、既存のプレビュー起動要素取得とは分離する。
+  // カット素材由来ではハサミアイコンにも photo クラスが付くため、
   // img.photo:not(.card-img-top) で実サムネイル枠だけを対象にする。
   function findMaterialThumbnailFrame(scope) {
     if (!scope) return null;
     return scope.querySelector('img.photo:not(.card-img-top)');
   }
 
-  function getMaterialTitleForDeletedCheck(scope, viewMode) {
+  function getMaterialTitleInfo(scope, viewMode) {
     if (!scope) return { available: false, value: '' };
 
     if (viewMode !== 'list') {
@@ -194,24 +198,22 @@
     return { available: true, value: (cell.textContent || '').trim() };
   }
 
-  function isDeletedMaterial(scope, viewMode) {
+  function hasBlankThumbnailFrame(scope) {
     var thumbnail = findMaterialThumbnailFrame(scope);
     if (!thumbnail) return false;
 
-    // 実機では削除済素材のサムネイル枠は src="" だけでなく、
-    // src 属性そのものが存在しない場合もある。img.src はページURLへ解決されるため使わず、
-    // getAttribute('src') の null / 空文字 / 空白のみをすべて「サムネイル枠が空」とみなす。
+    // getAttribute('src') は、属性なしなら null、src="" なら空文字を返す。
+    // どちらも「白サムネイル」として扱う。img.src はURLへ解決されるため使わない。
     var src = thumbnail.getAttribute('src');
-    var srcEmpty = (src == null) || String(src).trim() === '';
-    if (!srcEmpty) return false;
+    return src == null || String(src).trim() === '';
+  }
 
-    var title = getMaterialTitleForDeletedCheck(scope, viewMode);
-    if (title.available) return title.value === '';
-
-    // リスト表示では「表示項目設定」により素材タイトル列自体がDOMから消える。
-    // この場合はタイトル条件を観測できないため、実機で削除済判定に有効と確認した
-    // サムネイル枠src未設定/空を縮退条件として削除済扱いにする。
-    return viewMode === 'list';
+  function getUniqueMaterialTitleColumnIndex(table) {
+    if (!table) return -1;
+    var headers = Array.from(table.querySelectorAll('thead th, thead td')).filter(function (cell) {
+      return (cell.innerText || cell.textContent || '').trim() === '素材タイトル';
+    });
+    return headers.length === 1 ? headers[0].cellIndex : -1;
   }
 
   function makeUnknownFingerprint(scope, order) {
@@ -357,53 +359,208 @@
   }
 
   function getVisibleMaterialRoot(screen) {
-    var selector = screen === 'search' ? '#MaterialListPart' : '#materialListPart';
+    var selector = screen === 'container' ? '#materialListPart' : null;
+    if (!selector) return null;
     return Array.from(document.querySelectorAll(selector)).find(function (el) {
       return visible(el);
     }) || null;
   }
 
+  function getSearchSectionRoots() {
+    var defs = [
+      { selector: '#MaterialListPart', materialType: 'original', materialTypeLabel: '元素材' },
+      { selector: '#OAListPart', materialType: 'oa', materialTypeLabel: 'OA素材' }
+    ];
+    var sections = [];
+    var collapsed = [];
+
+    defs.forEach(function (def) {
+      var nodes = Array.from(document.querySelectorAll(def.selector));
+      var root = nodes.find(function (el) { return visible(el); }) || null;
+      if (root) {
+        sections.push({
+          root: root,
+          materialType: def.materialType,
+          materialTypeLabel: def.materialTypeLabel
+        });
+      } else if (nodes.some(function (el) { return /(^|\s)d-none(\s|$)/.test(String(el.className || '')); })) {
+        // 実機では検索条件OFFならDOM自体が消え、折りたたみ時はroot自身にd-noneが付く。
+        // SPA遷移で残った不可視DOMを折りたたみと誤認しないため、d-noneを明示確認する。
+        collapsed.push(def.materialTypeLabel);
+      }
+    });
+
+    return { sections: sections, collapsed: collapsed };
+  }
+
   function collectTiles(screen) {
+    if (screen === 'search') {
+      var searchRoots = getSearchSectionRoots();
+
+      if (searchRoots.collapsed.length > 0) {
+        return {
+          ok: false,
+          message: searchRoots.collapsed.join('・') +
+            'セクションが折りたたまれています。対象セクションを展開してから再実行してください。'
+        };
+      }
+
+      if (searchRoots.sections.length === 0) {
+        return {
+          ok: true,
+          viewMode: 'unknown',
+          viewDesc: '表示モード不明',
+          entries: []
+        };
+      }
+
+      // 元素材/OA素材の表示モードは同時に切り替わる。
+      // いずれかのセクションに可視search-listがあればリスト表示として収集する。
+      var listMode = searchRoots.sections.some(function (section) {
+        return Array.from(section.root.querySelectorAll('table.search-list')).some(function (table) {
+          return visible(table);
+        });
+      });
+
+      var searchEntries = [];
+
+      if (listMode) {
+        for (var si = 0; si < searchRoots.sections.length; si++) {
+          var section = searchRoots.sections[si];
+          var tables = Array.from(section.root.querySelectorAll('table.search-list')).filter(function (table) {
+            return visible(table);
+          });
+
+          if (tables.length > 1) {
+            return {
+              ok: false,
+              message: section.materialTypeLabel +
+                'のリスト表示テーブルを複数検出しました。画面を再読み込みしてから再実行してください。'
+            };
+          }
+
+          if (tables.length === 0) {
+            // 0件セクションは可視テーブル自体が無い場合があるため、素材らしい可視要素が無ければ許容する。
+            var hasVisibleMaterial = Array.from(section.root.querySelectorAll('img.photo, span.h6')).some(function (el) {
+              return visible(el);
+            });
+            if (hasVisibleMaterial) {
+              return {
+                ok: false,
+                message: section.materialTypeLabel +
+                  'の表示モードを正しく判定できません。検索結果を再表示してから再実行してください。'
+              };
+            }
+            continue;
+          }
+
+          var listTable = tables[0];
+          var rows = Array.from(listTable.tBodies || []).reduce(function (all, tbody) {
+            return all.concat(Array.from(tbody.rows || []));
+          }, []).filter(function (row) {
+            return visible(row);
+          });
+
+          // 0件セクションには判定対象素材が無いため列要件を課さない。
+          if (rows.length > 0 && getUniqueMaterialTitleColumnIndex(listTable) < 0) {
+            return {
+              ok: false,
+              message: section.materialTypeLabel +
+                'のリスト表示で「素材タイトル」列を確認できません。\n' +
+                '表示項目設定で「素材タイトル」を表示してから再実行してください。'
+            };
+          }
+
+          rows.forEach(function (row) {
+            searchEntries.push({
+              element: row,
+              materialType: section.materialType,
+              materialTypeLabel: section.materialTypeLabel
+            });
+          });
+        }
+
+        return {
+          ok: true,
+          viewMode: 'list',
+          viewDesc: 'リスト表示',
+          entries: searchEntries
+        };
+      }
+
+      searchRoots.sections.forEach(function (section) {
+        var cards = [];
+        if (section.materialType === 'original') {
+          cards = Array.from(section.root.querySelectorAll('.draggable-tag'))
+            .filter(function (el) { return visible(el); });
+        } else {
+          // OA素材は .draggable-tag を持たないため、実測DOM構造でタイルを特定する。
+          cards = Array.from(section.root.querySelectorAll('div.d-block.position-relative')).filter(function (el) {
+            var hasStructure = !!el.querySelector('img.photo') &&
+              !!el.querySelector('span.h6') && !!el.querySelector('p.m-0');
+            return visible(el) && hasStructure &&
+              !(el.parentElement && el.parentElement.closest('div.d-block.position-relative'));
+          });
+        }
+
+        cards.forEach(function (card) {
+          searchEntries.push({
+            element: card,
+            materialType: section.materialType,
+            materialTypeLabel: section.materialTypeLabel
+          });
+        });
+      });
+
+      return {
+        ok: true,
+        viewMode: 'thumbnail',
+        viewDesc: 'サムネイル表示',
+        entries: searchEntries
+      };
+    }
+
     var root = getVisibleMaterialRoot(screen);
     if (!root) {
       return {
+        ok: true,
         viewMode: 'unknown',
         viewDesc: '表示モード不明',
-        elements: []
+        entries: []
       };
     }
 
     // webCVはサムネイル/リスト両方のDOMを常時保持し、.d-none等で切り替える。
-    // さらにSPA遷移後は前画面のDOMが非表示のまま残るため、
-    // 「現在画面の可視root配下」かつ「可視のsearch-list」でリスト表示を判定する。
     var listTable = Array.from(root.querySelectorAll('table.search-list')).find(function (table) {
       return visible(table);
     }) || null;
 
     if (listTable) {
+      if (getUniqueMaterialTitleColumnIndex(listTable) < 0) {
+        return {
+          ok: false,
+          message: 'コンテナのリスト表示で「素材タイトル」列を確認できません。\n' +
+            '表示項目設定で「素材タイトル」を表示してから再実行してください。'
+        };
+      }
+
       var rows = Array.from(listTable.tBodies || []).reduce(function (all, tbody) {
         return all.concat(Array.from(tbody.rows || []));
       }, []).filter(function (row) {
         return visible(row);
       });
+
       return {
+        ok: true,
         viewMode: 'list',
         viewDesc: 'リスト表示',
-        elements: rows
-      };
-    }
-
-    if (screen === 'search') {
-      return {
-        viewMode: 'thumbnail',
-        viewDesc: 'サムネイル表示',
-        elements: Array.from(root.querySelectorAll('.draggable-tag'))
-          .filter(function (t) { return visible(t); })
+        entries: rows.map(function (row) {
+          return { element: row, materialType: 'container', materialTypeLabel: 'コンテナ' };
+        })
       };
     }
 
     // コンテナ・サムネイルでは素材番号の書式を素材収集条件にしない。
-    // 実測された素材単位 div.nonSelect.d-block を優先する。
     var cards = Array.from(root.querySelectorAll('div.nonSelect.d-block')).filter(function (el) {
       var hasCardStructure = el.matches('.tableBorderBlack') || !!el.querySelector('.tableBorderBlack') ||
         !!el.querySelector('span.h6') || !!el.querySelector('img.photo');
@@ -411,8 +568,6 @@
         !(el.parentElement && el.parentElement.closest('div.nonSelect.d-block'));
     });
 
-    // webCV改版でwrapperクラスが変わった場合の構造fallback。
-    // 番号文字列そのものではなく、素材番号アンカー/サムネイル構造で候補を拾う。
     if (cards.length === 0) {
       cards = Array.from(root.querySelectorAll('.tableBorderBlack')).filter(function (t) {
         return visible(t) &&
@@ -422,34 +577,44 @@
     }
 
     return {
+      ok: true,
       viewMode: 'thumbnail',
       viewDesc: 'サムネイル表示',
-      elements: cards
+      entries: cards.map(function (card) {
+        return { element: card, materialType: 'container', materialTypeLabel: 'コンテナ' };
+      })
     };
   }
 
   function buildMaterialState(screen) {
     var collected = collectTiles(screen);
-    var tiles = collected.elements;
-    if (tiles.length === 0) {
+    if (!collected.ok) return collected;
+
+    var entries = collected.entries || [];
+    if (entries.length === 0) {
       return {
         ok: false,
         message: screen === 'search'
-          ? '検索結果の素材が表示されていません。素材を検索してから実行してください。'
+          ? '検索結果の素材が表示されていません。元素材またはOA素材を検索してから実行してください。'
           : 'コンテナが選択されていないか、素材がありません。\n特定のコンテナを開いて素材を表示してから実行してください。'
       };
     }
 
-    var items = tiles.map(function (tile, order) {
+    var items = entries.map(function (entry, order) {
+      var tile = entry.element;
       var noInfo = getMaterialNo(tile, collected.viewMode);
       var noValue = noInfo.value;
       var isError = Array.from(tile.querySelectorAll('.badge')).some(function (b) {
         return /badgeOrange/.test(b.className) || /\bError\b/.test(b.innerText);
       });
       var previewTrigger = findPreviewTrigger(tile, collected.viewMode);
+      var titleInfo = getMaterialTitleInfo(tile, collected.viewMode);
+      var blankThumbnail = titleInfo.available && titleInfo.value === '' && hasBlankThumbnailFrame(tile);
 
       var unknownReason = '';
-      if (!noValue) {
+      if (!titleInfo.available) {
+        unknownReason = '素材タイトルを取得できない';
+      } else if (!noValue) {
         unknownReason = noInfo.reason || '素材番号を取得できない';
       } else if (collected.viewMode === 'list' && !previewTrigger) {
         unknownReason = 'プレビュー起動要素(サムネイル画像)を取得できない';
@@ -465,6 +630,11 @@
         no: noValue ? noValue.display : null,
         noKey: noValue ? noValue.key : null,
         noSource: noInfo.source || null,
+        materialType: entry.materialType || (screen === 'search' ? 'original' : 'container'),
+        materialTypeLabel: entry.materialTypeLabel || (screen === 'search' ? '元素材' : 'コンテナ'),
+        titleAvailable: !!titleInfo.available,
+        title: titleInfo.available ? titleInfo.value : null,
+        blankThumbnail: !!blankThumbnail,
         fallbackLabel: fallbackText ? fallbackText.slice(0, 90) : '(番号不明 #' + (order + 1) + ')',
         fingerprint: noValue ? 'material:' + noValue.key : makeUnknownFingerprint(tile, order),
         isError: isError,
@@ -477,21 +647,29 @@
     var targets = [];
     var duplicates = [];
     var excluded = [];
-    var deleted = [];
+    var blankThumbnails = [];
+    var emptyTitles = [];
     var unknown = [];
 
     items.forEach(function (item) {
+      // 優先順: Error → 白サムネ+タイトル空 → タイトル空 → unknown → 重複 → target
       if (item.isError) {
         item.kind = 'excluded';
         excluded.push(item);
         return;
       }
-      if (screen === 'container' && isDeletedMaterial(item.tile, collected.viewMode)) {
-        item.kind = 'deleted';
-        deleted.push(item);
+      if (item.titleAvailable && item.title === '' && item.blankThumbnail) {
+        item.kind = 'blankThumbnail';
+        blankThumbnails.push(item);
         return;
       }
-      if (!item.noKey || (collected.viewMode === 'list' && !item.previewTrigger)) {
+      if (item.titleAvailable && item.title === '') {
+        item.kind = 'emptyTitle';
+        emptyTitles.push(item);
+        return;
+      }
+      if (!item.titleAvailable || !item.noKey ||
+          (collected.viewMode === 'list' && !item.previewTrigger)) {
         item.kind = 'unknown';
         unknown.push(item);
         return;
@@ -506,6 +684,9 @@
       targets.push(item);
     });
 
+    var originalCount = items.filter(function (item) { return item.materialType === 'original'; }).length;
+    var oaCount = items.filter(function (item) { return item.materialType === 'oa'; }).length;
+
     return {
       ok: true,
       viewMode: collected.viewMode,
@@ -514,8 +695,11 @@
       targets: targets,
       duplicates: duplicates,
       excluded: excluded,
-      deleted: deleted,
-      unknown: unknown
+      blankThumbnails: blankThumbnails,
+      emptyTitles: emptyTitles,
+      unknown: unknown,
+      originalCount: originalCount,
+      oaCount: oaCount
     };
   }
 
@@ -537,6 +721,7 @@
           order: i.order,
           no: i.no || null,
           noKey: i.noKey || null,
+          materialType: i.materialType || null,
           fingerprint: i.fingerprint,
           isError: !!i.isError,
           kind: i.kind,
@@ -742,11 +927,18 @@
   }
 
   function rowInitialModel(item) {
-    if (item.kind === 'deleted') {
+    if (item.kind === 'blankThumbnail') {
       return {
         order: item.order, no: item.no || item.fallbackLabel || '(番号不明)', kind: item.kind, final: true,
         status: 'スキップ(削除済み)', statusClass: 'skip', delNote: '-', depNote: '-',
-        reason: '削除済素材のため処理対象外'
+        reason: 'サムネイルが空のため、削除済素材として処理対象外'
+      };
+    }
+    if (item.kind === 'emptyTitle') {
+      return {
+        order: item.order, no: item.no || item.fallbackLabel || '(番号不明)', kind: item.kind, final: true,
+        status: 'スキップ(タイトル未設定)', statusClass: 'skip', delNote: '-', depNote: '-',
+        reason: '素材タイトルが未設定のため処理対象外'
       };
     }
     if (item.kind === 'duplicate') {
@@ -767,7 +959,7 @@
       return {
         order: item.order, no: item.no || item.fallbackLabel || '(番号不明)', kind: item.kind, final: true,
         status: 'スキップ', statusClass: 'skip', delNote: '-', depNote: '-',
-        reason: item.unknownReason || '素材番号またはプレビュー起動要素を取得できない'
+        reason: item.unknownReason || '素材番号・素材タイトル・プレビュー起動要素のいずれかを取得できない'
       };
     }
     return {
@@ -863,10 +1055,15 @@
     if (mode1) mode1.checked = true;
 
     $('screen-info').textContent = '実行画面: ' + ctx.screenDesc + ' / ' + ctx.viewDesc;
+    var typeBreakdown = ctx.screen === 'search'
+      ? '（元素材: ' + ctx.originalCount + ' / OA素材: ' + ctx.oaCount + '）'
+      : '';
     $('detected-info').textContent =
-      '認識: ' + ctx.items.length + '件 / 処理対象: ' + ctx.targets.length +
-      '件 / 削除済: ' + ctx.deleted.length + '件 / Error除外: ' + ctx.excluded.length +
-      '件 / 重複: ' + ctx.duplicates.length + '件 / 番号不明: ' + ctx.unknown.length + '件';
+      '認識: ' + ctx.items.length + '件' + typeBreakdown + ' / 処理対象: ' + ctx.targets.length +
+      '件 / 削除済(白サムネ): ' + ctx.blankThumbnails.length +
+      '件 / タイトル未設定: ' + ctx.emptyTitles.length +
+      '件 / Error除外: ' + ctx.excluded.length +
+      '件 / 重複: ' + ctx.duplicates.length + '件 / 判定不能: ' + ctx.unknown.length + '件';
 
     $('config-area').style.opacity = '1';
     Array.from(shadow.querySelectorAll('input')).forEach(function (el) { el.disabled = false; });
@@ -881,7 +1078,7 @@
     $('footer-note').textContent = '対象一覧と設定日を確認してから実行してください。';
     if (ctx.targets.length === 0) {
       setMessage(
-        '素材は' + ctx.items.length + '件認識しましたが、処理対象は0件です。削除済・番号不明・Error除外などの一覧を確認してください。',
+        '素材は' + ctx.items.length + '件認識しましたが、処理対象は0件です。削除済・タイトル未設定・判定不能・Error除外などの一覧を確認してください。',
         'warn'
       );
     } else if (ctx.targets.length >= 100) {
