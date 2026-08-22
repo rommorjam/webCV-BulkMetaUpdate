@@ -28,7 +28,7 @@
 (function () {
   'use strict';
 
-  var TOOL_VERSION = '1.0.11';
+  var TOOL_VERSION = '1.0.12';
   var TOOL_GLOBAL = '__cvDateBatchTool';
   var RESULT_GLOBAL = '__cvDeleteDateResults';
 
@@ -759,7 +759,7 @@
       ':host{all:initial}',
       '*{box-sizing:border-box}',
       '.overlay{position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483647;background:rgba(15,23,42,.52);display:flex;align-items:center;justify-content:center;padding:18px;font-family:"Hiragino Sans","Yu Gothic UI","Meiryo",sans-serif;color:#1e293b;font-size:14px}',
-      '.panel{width:1270px;max-width:96vw;height:88vh;max-height:900px;min-height:560px;background:#fff;border-radius:12px;box-shadow:0 24px 80px rgba(0,0,0,.42);display:flex;flex-direction:column;overflow:hidden}',
+      '.panel{width:1160px;max-width:96vw;height:88vh;max-height:900px;min-height:560px;background:#fff;border-radius:12px;box-shadow:0 24px 80px rgba(0,0,0,.42);display:flex;flex-direction:column;overflow:hidden}',
       '.titlebar{flex:0 0 auto;background:#0f766e;color:#fff;padding:13px 17px;display:flex;align-items:center;gap:12px}',
       '.titlebar h1{font-size:16px;font-weight:700;margin:0;flex:1}',
       '.version{font-size:11px;opacity:.82}',
@@ -799,10 +799,10 @@
       '.message.info{background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af}',
       '.message.warn{background:#fffbeb;border:1px solid #fde68a;color:#92400e;font-weight:600}',
       '.list-wrap{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;background:#fff;overflow-x:auto;overflow-y:hidden}',
-      '.list-head,.result-row{display:grid;grid-template-columns:160px 400px 150px 120px 120px 320px;align-items:center}',
-      '.list-head{flex:0 0 auto;min-width:1270px;background:#f1f5f9;border-bottom:1px solid #cbd5e1;font-size:11px;font-weight:700;color:#475569}',
+      '.list-head,.result-row{display:grid;grid-template-columns:120px 400px 140px 80px 100px 320px;align-items:center}',
+      '.list-head{flex:0 0 auto;min-width:1160px;background:#f1f5f9;border-bottom:1px solid #cbd5e1;font-size:11px;font-weight:700;color:#475569}',
       '.list-head>div{padding:8px 10px;border-right:1px solid #e2e8f0}',
-      '.list-scroll{flex:1 1 auto;min-height:0;min-width:1270px;overflow-y:auto;overscroll-behavior:contain}',
+      '.list-scroll{flex:1 1 auto;min-height:0;min-width:1160px;overflow-y:auto;overscroll-behavior:contain}',
       '.result-row{min-height:42px;border-bottom:1px solid #eef2f7;font-size:12px}',
       '.result-row>div{padding:8px 10px;min-width:0;overflow-wrap:anywhere}',
       '.result-row.processing{background:#ecfeff}',
@@ -810,8 +810,9 @@
       '.result-row.fail{background:#fef2f2}',
       '.result-row.skip{background:#fffbeb}',
       '.result-row.excluded{background:#f8fafc;color:#64748b}',
-      '.material{font-family:"MS Gothic","Consolas",monospace;font-weight:700}',
+      '.material{font-family:"MS Gothic","Consolas",monospace;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
       '.material-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+      '.status,.del,.dep{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
       '.status-badge{display:inline-flex;align-items:center;gap:5px;font-weight:700}',
       '.muted{color:#94a3b8}',
       '.footer{flex:0 0 auto;border-top:1px solid #e2e8f0;padding:10px 16px;background:#fff;display:flex;align-items:center;gap:8px}',
@@ -822,7 +823,7 @@
       '.btn-primary:hover{background:#0d5f59}',
       '.btn:disabled{opacity:.45;cursor:not-allowed}',
       '.btn:disabled:hover{background:inherit}',
-      '@media(max-width:760px){.panel{height:94vh;max-width:98vw}.config{grid-template-columns:1fr 1fr}.mode-field{grid-column:1/-1}.list-head,.result-row{grid-template-columns:140px 360px 130px 105px 105px minmax(210px,1fr)}.list-head,.list-scroll{min-width:1050px}}',
+      '@media(max-width:760px){.panel{height:94vh;max-width:98vw}.config{grid-template-columns:1fr 1fr}.mode-field{grid-column:1/-1}.list-head,.result-row{grid-template-columns:120px 360px 130px 80px 100px 280px}.list-head,.list-scroll{min-width:1070px}}',
       '</style>',
       '<div class="overlay">',
       '  <div class="panel" role="dialog" aria-modal="true" aria-label="webCV 削除日延長バルス">',
@@ -1011,9 +1012,24 @@
     } else {
       titleEl.removeAttribute('title');
     }
-    row.querySelector('.status').textContent = model.status;
-    row.querySelector('.del').textContent = model.delNote && model.delNote !== '-' ? model.delNote : '—';
-    row.querySelector('.dep').textContent = model.depNote && model.depNote !== '-' ? model.depNote : '—';
+    var statusEl = row.querySelector('.status');
+    var statusText = model.status || '';
+    statusEl.textContent = statusText;
+    if (statusText) statusEl.setAttribute('title', statusText);
+    else statusEl.removeAttribute('title');
+
+    var delEl = row.querySelector('.del');
+    var delText = model.delNote && model.delNote !== '-' ? model.delNote : '—';
+    delEl.textContent = delText;
+    if (delText !== '—') delEl.setAttribute('title', delText);
+    else delEl.removeAttribute('title');
+
+    var depEl = row.querySelector('.dep');
+    var depText = model.depNote && model.depNote !== '-' ? model.depNote : '—';
+    depEl.textContent = depText;
+    if (depText !== '—') depEl.setAttribute('title', depText);
+    else depEl.removeAttribute('title');
+
     row.querySelector('.reason').textContent = model.reason || '';
   }
 
