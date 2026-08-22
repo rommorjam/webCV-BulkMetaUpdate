@@ -1,7 +1,7 @@
 /**
  * ============================================================================
  * webCV 削除日延長バルス
- * Version 1.0.13
+ * Version 1.0.14
  * ============================================================================
  * targetCode.js v5 の更新エンジンをベースに、ブックマークレット配布用のUIを追加。
  *
@@ -18,6 +18,7 @@
  * - Not Filed サムネイルでも素材タイトル有 + Errorなしなら通常素材と同じ処理対象
  * - リスト表示では「素材タイトル」列の表示を必須とし、列が無ければ実行しない
  * - 起動時の削除日・預入日は空欄。削除日は常に必須、モード2では預入日も必須
+ * - 日付入力欄のクリックでもネイティブ日付選択カレンダーを開く（showPicker対応ブラウザ）
  * - 削除日・預入日はツール実行日以降のみ選択可能
  * - 削除日 > 預入日 を必須条件とする
  * - 実行直前に対象スナップショットを再検証し、変化があれば中断
@@ -29,7 +30,7 @@
 (function () {
   'use strict';
 
-  var TOOL_VERSION = '1.0.13';
+  var TOOL_VERSION = '1.0.14';
   var TOOL_GLOBAL = '__cvDateBatchTool';
   var RESULT_GLOBAL = '__cvDeleteDateResults';
 
@@ -774,7 +775,7 @@
       '.radios{display:flex;gap:14px;min-height:36px;align-items:center;flex-wrap:wrap}',
       '.radio{display:inline-flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap}',
       '.radio input{accent-color:#0f766e}',
-      'input[type=date]{width:100%;height:36px;border:1px solid #cbd5e1;border-radius:7px;padding:5px 9px;font:inherit;background:#fff;color:#1e293b}',
+      'input[type=date]{width:100%;height:36px;border:1px solid #cbd5e1;border-radius:7px;padding:5px 9px;font:inherit;background:#fff;color:#1e293b;cursor:pointer}',
       'input[type=date]:focus{outline:2px solid #0f766e;outline-offset:-1px}',
       'input[type=date]:disabled{background:#f1f5f9;color:#94a3b8}',
       'input[type=date].required-empty{border-color:#dc2626;background:#fff7f7;box-shadow:0 0 0 1px #dc2626 inset}',
@@ -873,6 +874,8 @@
     $('delete-date').addEventListener('change', validateConfig);
     $('deposit-date').addEventListener('input', validateConfig);
     $('deposit-date').addEventListener('change', validateConfig);
+    $('delete-date').addEventListener('click', function () { openNativeDatePicker($('delete-date')); });
+    $('deposit-date').addEventListener('click', function () { openNativeDatePicker($('deposit-date')); });
     Array.from(shadow.querySelectorAll('input[name="mode"]')).forEach(function (el) {
       el.addEventListener('change', function () {
         $('deposit-date').disabled = getMode() !== '2';
@@ -892,6 +895,17 @@
   function getMode() {
     var checked = shadow.querySelector('input[name="mode"]:checked');
     return checked ? checked.value : '1';
+  }
+
+  function openNativeDatePicker(input) {
+    if (!input || input.disabled) return;
+    if (typeof input.showPicker === 'function') {
+      try {
+        input.showPicker();
+        return;
+      } catch (e) {}
+    }
+    input.focus();
   }
 
   function setMessage(text, kind) {
@@ -932,6 +946,8 @@
 
     if (currentContext && currentContext.targets.length === 0) {
       message = '処理対象の素材がありません。削除済・番号不明・Error除外などの一覧を確認してください。';
+    } else if (mode === '2' && !del && !dep) {
+      message = '削除日・預入日を選択してください。';
     } else if (!del) {
       message = '削除日を選択してください。';
     } else if (executionDateIso && del < executionDateIso) {
