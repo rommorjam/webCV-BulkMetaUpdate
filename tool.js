@@ -1,7 +1,7 @@
 /**
  * ============================================================================
  * webCV 削除日延長バルス
- * Version 1.0.8
+ * Version 1.0.13
  * ============================================================================
  * targetCode.js v5 の更新エンジンをベースに、ブックマークレット配布用のUIを追加。
  *
@@ -17,6 +17,7 @@
  * - サムネイル枠src空 + 素材タイトル空は、ユーザー表示上「削除済み」としてスキップ
  * - Not Filed サムネイルでも素材タイトル有 + Errorなしなら通常素材と同じ処理対象
  * - リスト表示では「素材タイトル」列の表示を必須とし、列が無ければ実行しない
+ * - 起動時の削除日・預入日は空欄。削除日は常に必須、モード2では預入日も必須
  * - 削除日・預入日はツール実行日以降のみ選択可能
  * - 削除日 > 預入日 を必須条件とする
  * - 実行直前に対象スナップショットを再検証し、変化があれば中断
@@ -28,7 +29,7 @@
 (function () {
   'use strict';
 
-  var TOOL_VERSION = '1.0.12';
+  var TOOL_VERSION = '1.0.13';
   var TOOL_GLOBAL = '__cvDateBatchTool';
   var RESULT_GLOBAL = '__cvDeleteDateResults';
 
@@ -776,6 +777,8 @@
       'input[type=date]{width:100%;height:36px;border:1px solid #cbd5e1;border-radius:7px;padding:5px 9px;font:inherit;background:#fff;color:#1e293b}',
       'input[type=date]:focus{outline:2px solid #0f766e;outline-offset:-1px}',
       'input[type=date]:disabled{background:#f1f5f9;color:#94a3b8}',
+      'input[type=date].required-empty{border-color:#dc2626;background:#fff7f7;box-shadow:0 0 0 1px #dc2626 inset}',
+      'input[type=date].required-empty:focus{outline:2px solid #dc2626;outline-offset:-1px}',
       '.rule{margin-top:8px;font-size:12px;color:#64748b}',
       '.validation{min-height:18px;margin-top:4px;font-size:12px;color:#b91c1c;font-weight:600}',
       '.summary{flex:0 0 auto;padding:12px 16px;border-bottom:1px solid #e2e8f0;background:#f8fafc}',
@@ -836,10 +839,10 @@
       '      <div class="context"><span id="screen-info"></span><span>グループ: CV収録送出</span><span id="detected-info"></span></div>',
       '      <div class="config" id="config-area">',
       '        <div class="mode-field"><span class="field-label">処理モード</span><div class="radios"><label class="radio"><input type="radio" name="mode" value="1" checked> 削除日のみ更新</label><label class="radio"><input type="radio" name="mode" value="2"> 削除日＋預入日を更新</label></div></div>',
-      '        <label><span class="field-label">削除日</span><input type="date" id="delete-date"></label>',
+      '        <label><span class="field-label">削除日</span><input type="date" id="delete-date" required aria-required="true"></label>',
       '        <label><span class="field-label">預入日</span><input type="date" id="deposit-date" disabled></label>',
       '      </div>',
-      '      <div class="rule">日付ルール: <strong>削除日・預入日はツール実行日以降</strong>、かつ <strong>削除日 &gt; 預入日</strong>。「削除日+預入日を更新」では両条件を満たす日付のみ実行できます。</div>',
+      '      <div class="rule"><strong>削除日は入力必須</strong>です。「削除日＋預入日を更新」では<strong>預入日も入力必須</strong>です。日付ルール: 削除日・預入日はツール実行日以降、かつ 削除日 &gt; 預入日。</div>',
       '      <div class="validation" id="validation"></div>',
       '    </div>',
       '    <div class="summary">',
@@ -902,12 +905,30 @@
     el.className = 'message show ' + (kind || 'info');
   }
 
+  function updateRequiredDateState(mode, del, dep) {
+    var deleteInput = $('delete-date');
+    var depositInput = $('deposit-date');
+    var depositRequired = mode === '2';
+
+    deleteInput.required = true;
+    deleteInput.setAttribute('aria-required', 'true');
+    deleteInput.classList.toggle('required-empty', !del);
+    deleteInput.setAttribute('aria-invalid', !del ? 'true' : 'false');
+
+    depositInput.required = depositRequired;
+    depositInput.setAttribute('aria-required', depositRequired ? 'true' : 'false');
+    depositInput.classList.toggle('required-empty', depositRequired && !dep);
+    depositInput.setAttribute('aria-invalid', depositRequired && !dep ? 'true' : 'false');
+  }
+
   function validateConfig() {
     if (!shadow) return false;
     var mode = getMode();
     var del = $('delete-date').value;
     var dep = $('deposit-date').value;
     var message = '';
+
+    updateRequiredDateState(mode, del, dep);
 
     if (currentContext && currentContext.targets.length === 0) {
       message = '処理対象の素材がありません。削除済・番号不明・Error除外などの一覧を確認してください。';
@@ -1078,8 +1099,8 @@
     executionDateIso = isoLocal(today);
     $('delete-date').min = executionDateIso;
     $('deposit-date').min = executionDateIso;
-    $('delete-date').value = isoLocal(addLocalDays(today, 2));
-    $('deposit-date').value = isoLocal(addLocalDays(today, 1));
+    $('delete-date').value = '';
+    $('deposit-date').value = '';
     $('deposit-date').disabled = true;
     var mode1 = shadow.querySelector('input[name="mode"][value="1"]');
     if (mode1) mode1.checked = true;
