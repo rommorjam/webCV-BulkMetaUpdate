@@ -1,7 +1,7 @@
 /**
  * ============================================================================
  * webCV 削除日延長バルス
- * Version 1.0.14
+ * Version 1.0.15
  * ============================================================================
  * targetCode.js v5 の更新エンジンをベースに、ブックマークレット配布用のUIを追加。
  *
@@ -24,13 +24,15 @@
  * - 実行直前に対象スナップショットを再検証し、変化があれば中断
  * - 実行中はwebCV画面操作をガードし、離脱時にブラウザ警告を表示
  * - 対象素材ごとの進捗・結果を同一画面でリアルタイム表示
+ * - 一覧左端のチェックボックスで実行対象を選択可能。処理可能素材は初期ON、事前スキップ素材はOFF固定
+ * - ヘッダチェックで処理可能素材を全選択/全解除。選択0件では実行不可
  * - 不可視iframe、Workerタイマー、再描画対策、保存後検証、1回リトライを維持
  * ============================================================================
  */
 (function () {
   'use strict';
 
-  var TOOL_VERSION = '1.0.14';
+  var TOOL_VERSION = '1.0.15';
   var TOOL_GLOBAL = '__cvDateBatchTool';
   var RESULT_GLOBAL = '__cvDeleteDateResults';
 
@@ -761,7 +763,7 @@
       ':host{all:initial}',
       '*{box-sizing:border-box}',
       '.overlay{position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483647;background:rgba(15,23,42,.52);display:flex;align-items:center;justify-content:center;padding:18px;font-family:"Hiragino Sans","Yu Gothic UI","Meiryo",sans-serif;color:#1e293b;font-size:14px}',
-      '.panel{width:1160px;max-width:96vw;height:88vh;max-height:900px;min-height:560px;background:#fff;border-radius:12px;box-shadow:0 24px 80px rgba(0,0,0,.42);display:flex;flex-direction:column;overflow:hidden}',
+      '.panel{width:1196px;max-width:96vw;height:88vh;max-height:900px;min-height:560px;background:#fff;border-radius:12px;box-shadow:0 24px 80px rgba(0,0,0,.42);display:flex;flex-direction:column;overflow:hidden}',
       '.titlebar{flex:0 0 auto;background:#0f766e;color:#fff;padding:13px 17px;display:flex;align-items:center;gap:12px}',
       '.titlebar h1{font-size:16px;font-weight:700;margin:0;flex:1}',
       '.version{font-size:11px;opacity:.82}',
@@ -803,12 +805,16 @@
       '.message.info{background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af}',
       '.message.warn{background:#fffbeb;border:1px solid #fde68a;color:#92400e;font-weight:600}',
       '.list-wrap{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;background:#fff;overflow-x:auto;overflow-y:hidden}',
-      '.list-head,.result-row{display:grid;grid-template-columns:120px 400px 140px 80px 100px 320px;align-items:center}',
-      '.list-head{flex:0 0 auto;min-width:1160px;background:#f1f5f9;border-bottom:1px solid #cbd5e1;font-size:11px;font-weight:700;color:#475569}',
+      '.list-head,.result-row{display:grid;grid-template-columns:36px 120px 400px 140px 80px 100px 320px;align-items:center}',
+      '.list-head{flex:0 0 auto;min-width:1196px;background:#f1f5f9;border-bottom:1px solid #cbd5e1;font-size:11px;font-weight:700;color:#475569}',
       '.list-head>div{padding:8px 10px;border-right:1px solid #e2e8f0}',
-      '.list-scroll{flex:1 1 auto;min-height:0;min-width:1160px;overflow-y:auto;overscroll-behavior:contain}',
+      '.list-scroll{flex:1 1 auto;min-height:0;min-width:1196px;overflow-y:auto;overscroll-behavior:contain}',
       '.result-row{min-height:42px;border-bottom:1px solid #eef2f7;font-size:12px}',
       '.result-row>div{padding:8px 10px;min-width:0;overflow-wrap:anywhere}',
+      '.select-col{display:flex;align-items:center;justify-content:center;padding:0!important;min-width:0}',
+      '.select-col input{width:16px;height:16px;margin:0;accent-color:#0f766e;cursor:pointer}',
+      '.select-col input:disabled{cursor:not-allowed;opacity:.45}',
+      '.select-all-cell{cursor:pointer}',
       '.result-row.processing{background:#ecfeff}',
       '.result-row.success{background:#f0fdf4}',
       '.result-row.fail{background:#fef2f2}',
@@ -827,7 +833,7 @@
       '.btn-primary:hover{background:#0d5f59}',
       '.btn:disabled{opacity:.45;cursor:not-allowed}',
       '.btn:disabled:hover{background:inherit}',
-      '@media(max-width:760px){.panel{height:94vh;max-width:98vw}.config{grid-template-columns:1fr 1fr}.mode-field{grid-column:1/-1}.list-head,.result-row{grid-template-columns:120px 360px 130px 80px 100px 280px}.list-head,.list-scroll{min-width:1070px}}',
+      '@media(max-width:760px){.panel{height:94vh;max-width:98vw}.config{grid-template-columns:1fr 1fr}.mode-field{grid-column:1/-1}.list-head,.result-row{grid-template-columns:36px 120px 360px 130px 80px 100px 280px}.list-head,.list-scroll{min-width:1106px}}',
       '</style>',
       '<div class="overlay">',
       '  <div class="panel" role="dialog" aria-modal="true" aria-label="webCV 削除日延長バルス">',
@@ -853,7 +859,7 @@
       '      <div class="message" id="message"></div>',
       '    </div>',
       '    <div class="list-wrap">',
-      '      <div class="list-head"><div>素材番号</div><div>素材タイトル</div><div>結果 / 状態</div><div>削除日</div><div>預入日</div><div>詳細</div></div>',
+      '      <div class="list-head"><div class="select-col select-all-cell" id="select-all-cell" title="処理対象を全選択 / 全解除"><input type="checkbox" id="select-all" aria-label="処理対象を全選択または全解除"></div><div>素材番号</div><div>素材タイトル</div><div>結果 / 状態</div><div>削除日</div><div>預入日</div><div>詳細</div></div>',
       '      <div class="list-scroll" id="list-scroll"></div>',
       '    </div>',
       '    <div class="footer">',
@@ -876,6 +882,11 @@
     $('deposit-date').addEventListener('change', validateConfig);
     $('delete-date').addEventListener('click', function () { openNativeDatePicker($('delete-date')); });
     $('deposit-date').addEventListener('click', function () { openNativeDatePicker($('deposit-date')); });
+    $('select-all').addEventListener('change', function () { toggleAllTargetSelection($('select-all').checked); });
+    $('select-all-cell').addEventListener('click', function (e) {
+      if (running || $('select-all').disabled || e.target === $('select-all')) return;
+      $('select-all').click();
+    });
     Array.from(shadow.querySelectorAll('input[name="mode"]')).forEach(function (el) {
       el.addEventListener('change', function () {
         $('deposit-date').disabled = getMode() !== '2';
@@ -935,6 +946,105 @@
     depositInput.setAttribute('aria-invalid', depositRequired && !dep ? 'true' : 'false');
   }
 
+  function getTargetModels() {
+    return rowModels.filter(function (r) { return r.kind === 'target'; });
+  }
+
+  function getSelectedTargetModels() {
+    return getTargetModels().filter(function (r) { return !!r.selected; });
+  }
+
+  function getSelectedTargetCount() {
+    return getSelectedTargetModels().length;
+  }
+
+  function updateDetectedInfo() {
+    if (!currentContext || !shadow) return;
+    var typeBreakdown = currentContext.screen === 'search'
+      ? '（元素材: ' + currentContext.originalCount + ' / OA素材: ' + currentContext.oaCount + '）'
+      : '';
+    $('detected-info').textContent =
+      '認識: ' + currentContext.items.length + '件' + typeBreakdown + ' / 処理対象: ' + currentContext.targets.length +
+      '件 / 選択: ' + getSelectedTargetCount() + '件 / 削除済(白サムネ): ' + currentContext.blankThumbnails.length +
+      '件 / タイトル未設定: ' + currentContext.emptyTitles.length +
+      '件 / Error除外: ' + currentContext.excluded.length +
+      '件 / 重複: ' + currentContext.duplicates.length + '件 / 判定不能: ' + currentContext.unknown.length + '件';
+  }
+
+  function updateSelectAllState() {
+    if (!shadow) return;
+    var checkbox = $('select-all');
+    if (!checkbox) return;
+    var targets = getTargetModels();
+    var selectedCount = targets.filter(function (r) { return !!r.selected; }).length;
+    checkbox.checked = targets.length > 0 && selectedCount === targets.length;
+    checkbox.indeterminate = selectedCount > 0 && selectedCount < targets.length;
+    checkbox.disabled = running || targets.length === 0;
+  }
+
+  function refreshPreRunMessage() {
+    if (!currentContext || !shadow || running) return;
+    var selectedCount = getSelectedTargetCount();
+    if (currentContext.targets.length === 0) {
+      setMessage(
+        '素材は' + currentContext.items.length + '件認識しましたが、処理対象は0件です。削除済・タイトル未設定・判定不能・Error除外などの一覧を確認してください。',
+        'warn'
+      );
+    } else if (selectedCount >= 100) {
+      setMessage(
+        '選択中の処理対象が' + selectedCount + '件あります。完了まで長時間かかる可能性があります。対象件数を確認してから実行してください。',
+        'warn'
+      );
+    } else {
+      setMessage('', 'info');
+    }
+  }
+
+  function resetTargetModelForSelection(model, selected) {
+    model.selected = !!selected;
+    if (model.selected) {
+      model.final = false;
+      model.status = '待機中';
+      model.statusClass = '';
+      model.delNote = '-';
+      model.depNote = '-';
+      model.reason = '実行待ち';
+    } else {
+      model.final = true;
+      model.status = 'スキップ(選択解除)';
+      model.statusClass = 'skip';
+      model.delNote = '-';
+      model.depNote = '-';
+      model.reason = 'ユーザー操作により処理対象から除外';
+    }
+  }
+
+  function refreshSelectionUi() {
+    updateSelectAllState();
+    updateDetectedInfo();
+    updateSummary();
+    refreshPreRunMessage();
+    validateConfig();
+  }
+
+  function setTargetSelection(order, selected) {
+    if (running) return;
+    var model = modelForOrder(order);
+    if (!model || model.kind !== 'target') return;
+    resetTargetModelForSelection(model, selected);
+    paintRow(model);
+    refreshSelectionUi();
+  }
+
+  function toggleAllTargetSelection(selected) {
+    if (running) return;
+    getTargetModels().forEach(function (model) {
+      resetTargetModelForSelection(model, selected);
+      paintRow(model);
+    });
+    refreshSelectionUi();
+  }
+
   function validateConfig() {
     if (!shadow) return false;
     var mode = getMode();
@@ -946,6 +1056,8 @@
 
     if (currentContext && currentContext.targets.length === 0) {
       message = '処理対象の素材がありません。削除済・番号不明・Error除外などの一覧を確認してください。';
+    } else if (currentContext && getSelectedTargetCount() === 0) {
+      message = '延長対象の素材を1件以上選択してください。';
     } else if (mode === '2' && !del && !dep) {
       message = '削除日・預入日を選択してください。';
     } else if (!del) {
@@ -1012,6 +1124,8 @@
     rowModels = ctx.items.map(function (item) {
       var model = rowInitialModel(item);
       model.title = item.title == null ? '' : String(item.title);
+      model.selectable = item.kind === 'target';
+      model.selected = model.selectable;
       return model;
     }).sort(function (a, b) { return a.order - b.order; });
     var list = $('list-scroll');
@@ -1022,6 +1136,7 @@
       row.className = 'result-row ' + (model.statusClass || '');
       row.dataset.order = String(model.order);
       row.innerHTML =
+        '<div class="select-col"><input type="checkbox" class="row-select" aria-label="この素材を延長対象にする"></div>' +
         '<div class="material"></div>' +
         '<div class="material-title"></div>' +
         '<div class="status"></div>' +
@@ -1030,9 +1145,12 @@
         '<div class="reason"></div>';
       list.appendChild(row);
       rowEls.set(model.order, row);
+      var rowSelect = row.querySelector('.row-select');
+      rowSelect.addEventListener('change', function () { setTargetSelection(model.order, rowSelect.checked); });
       paintRow(model);
     });
 
+    updateSelectAllState();
     updateSummary();
   }
 
@@ -1040,6 +1158,12 @@
     var row = rowEls.get(model.order);
     if (!row) return;
     row.className = 'result-row ' + (model.statusClass || '');
+    var rowSelect = row.querySelector('.row-select');
+    if (rowSelect) {
+      rowSelect.checked = model.kind === 'target' && !!model.selected;
+      rowSelect.disabled = running || model.kind !== 'target';
+      rowSelect.title = model.kind === 'target' ? (model.selected ? '延長対象' : '延長対象から除外') : '前提条件により処理対象外';
+    }
     row.querySelector('.material').textContent = model.no;
     var titleEl = row.querySelector('.material-title');
     var fullTitle = model.title ? String(model.title) : '';
@@ -1084,8 +1208,8 @@
 
   function updateSummary() {
     if (!currentContext || !shadow) return;
-    var targetsTotal = currentContext.targets.length;
-    var targetModels = rowModels.filter(function (r) { return r.kind === 'target'; });
+    var targetModels = getSelectedTargetModels();
+    var targetsTotal = targetModels.length;
     var completed = targetModels.filter(function (r) { return r.final; }).length;
     var success = rowModels.filter(function (r) { return r.final && r.status === '成功'; }).length;
     var fail = rowModels.filter(function (r) { return r.final && /^失敗/.test(r.status); }).length;
@@ -1122,18 +1246,9 @@
     if (mode1) mode1.checked = true;
 
     $('screen-info').textContent = '実行画面: ' + ctx.screenDesc + ' / ' + ctx.viewDesc;
-    var typeBreakdown = ctx.screen === 'search'
-      ? '（元素材: ' + ctx.originalCount + ' / OA素材: ' + ctx.oaCount + '）'
-      : '';
-    $('detected-info').textContent =
-      '認識: ' + ctx.items.length + '件' + typeBreakdown + ' / 処理対象: ' + ctx.targets.length +
-      '件 / 削除済(白サムネ): ' + ctx.blankThumbnails.length +
-      '件 / タイトル未設定: ' + ctx.emptyTitles.length +
-      '件 / Error除外: ' + ctx.excluded.length +
-      '件 / 重複: ' + ctx.duplicates.length + '件 / 判定不能: ' + ctx.unknown.length + '件';
 
     $('config-area').style.opacity = '1';
-    Array.from(shadow.querySelectorAll('input')).forEach(function (el) { el.disabled = false; });
+    Array.from(shadow.querySelectorAll('#config-area input')).forEach(function (el) { el.disabled = false; });
     $('deposit-date').disabled = true;
     $('btn-x').disabled = false;
     $('btn-close').disabled = false;
@@ -1143,20 +1258,9 @@
     $('state-title').textContent = '実行内容を確認してください';
     $('current').textContent = '';
     $('footer-note').textContent = '対象一覧と設定日を確認してから実行してください。';
-    if (ctx.targets.length === 0) {
-      setMessage(
-        '素材は' + ctx.items.length + '件認識しましたが、処理対象は0件です。削除済・タイトル未設定・判定不能・Error除外などの一覧を確認してください。',
-        'warn'
-      );
-    } else if (ctx.targets.length >= 100) {
-      setMessage(
-        '処理対象が' + ctx.targets.length + '件あります。完了まで長時間かかる可能性があります。対象件数を確認してから実行してください。',
-        'warn'
-      );
-    } else {
-      setMessage('', 'info');
-    }
     renderRows(ctx);
+    updateDetectedInfo();
+    refreshPreRunMessage();
     validateConfig();
   }
 
@@ -1580,6 +1684,7 @@
     var dep = mode === '2'
       ? { iso: $('deposit-date').value, disp: displayIso($('deposit-date').value) }
       : null;
+    var selectedOrders = new Set(getSelectedTargetModels().map(function (r) { return r.order; }));
 
     // 実行直前に画面種別・グループ・全素材分類を再取得し、起動時との差分を検査する。
     var fresh = captureContext();
@@ -1600,6 +1705,17 @@
 
     // 最新DOM参照を処理に使う。スナップショットは同一なので対象内容は起動時と一致している。
     currentContext = fresh;
+    var selectedTargets = currentContext.targets.filter(function (item) { return selectedOrders.has(item.order); });
+    if (selectedTargets.length === 0 || selectedTargets.length !== selectedOrders.size) {
+      $('state-title').textContent = '処理を中断しました';
+      $('current').textContent = '';
+      setMessage('選択した処理対象を最新画面と対応付けできませんでした。安全のため処理を中断しました。ツールを閉じて再実行してください。', 'error');
+      $('btn-run').style.display = 'none';
+      $('config-area').style.opacity = '.55';
+      Array.from(shadow.querySelectorAll('input')).forEach(function (el) { el.disabled = true; });
+      $('footer-note').textContent = 'データは変更していません。ツールを閉じて再実行してください。';
+      return;
+    }
     running = true;
     ensureTimer();
     installExecutionGuard();
@@ -1620,8 +1736,8 @@
     var fatalRunError = null;
 
     try {
-      for (var i = 0; i < currentContext.targets.length; i++) {
-        var item = currentContext.targets[i];
+      for (var i = 0; i < selectedTargets.length; i++) {
+        var item = selectedTargets[i];
         var result = null;
 
         for (var attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -1633,7 +1749,7 @@
               // リスト表示では行選択リセットの効果が実証されていないため、この手順には依存せず
               // 同じpreviewTriggerへの再dblclickをそのまま再試行する。
               if (currentContext.viewMode === 'thumbnail') {
-                var other = currentContext.targets.find(function (t) { return t !== item; }) ||
+                var other = selectedTargets.find(function (t) { return t !== item; }) ||
                   currentContext.duplicates[0] || currentContext.excluded[0];
                 if (other && other.previewTrigger) {
                   clickSequence(other.previewTrigger, false);
