@@ -336,7 +336,7 @@
     if (!screen) {
       return {
         ok: false,
-        message: 'このツールはwebCVの素材検索画面または\nコンテナ画面で実行してください。'
+        message: '削除日延長バルスしたい場合はwebCVの素材検索画面または\nコンテナ画面で実行してください。'
       };
     }
 
