@@ -1,7 +1,7 @@
 /**
  * ============================================================================
  * webCV 削除日延長バルス
- * Version 1.0.15
+ * Version 1.0.16
  * ============================================================================
  * targetCode.js v5 の更新エンジンをベースに、ブックマークレット配布用のUIを追加。
  *
@@ -26,13 +26,15 @@
  * - 対象素材ごとの進捗・結果を同一画面でリアルタイム表示
  * - 一覧左端のチェックボックスで実行対象を選択可能。処理可能素材は初期ON、事前スキップ素材はOFF固定
  * - ヘッダチェックで処理可能素材を全選択/全解除。選択0件では実行不可
+ * - 一覧6列はヘッダクリックで昇順→降順→ソートOFF。ソートは表示順だけを変更し、実処理順・orderは不変
+ * - ソート時の値なし(null/空文字/-/—)は最小値として扱い、昇順では先頭・降順では末尾
  * - 不可視iframe、Workerタイマー、再描画対策、保存後検証、1回リトライを維持
  * ============================================================================
  */
 (function () {
   'use strict';
 
-  var TOOL_VERSION = '1.0.15';
+  var TOOL_VERSION = '1.0.16';
   var TOOL_GLOBAL = '__cvDateBatchTool';
   var RESULT_GLOBAL = '__cvDeleteDateResults';
 
@@ -80,6 +82,16 @@
   var guardCleanup = null;
   var beforeUnloadHandler = null;
   var executionDateIso = null;
+  var sortState = { key: null, direction: null };
+  var sortCollator = null;
+  try {
+    if (typeof Intl !== 'undefined' && typeof Intl.Collator === 'function') {
+      sortCollator = new Intl.Collator(['ja', 'en'], { numeric: true, sensitivity: 'base' });
+    }
+  } catch (e) {
+    // Intl.Collatorが利用できない環境ではlocaleCompareへフォールバックする。
+    sortCollator = null;
+  }
 
   // ===== 共通ユーティリティ ==================================================
   function visible(el) {
@@ -808,6 +820,14 @@
       '.list-head,.result-row{display:grid;grid-template-columns:36px 120px 400px 140px 80px 100px 320px;align-items:center}',
       '.list-head{flex:0 0 auto;min-width:1196px;background:#f1f5f9;border-bottom:1px solid #cbd5e1;font-size:11px;font-weight:700;color:#475569}',
       '.list-head>div{padding:8px 10px;border-right:1px solid #e2e8f0}',
+      '.sortable-col{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;outline:none}',
+      '.sortable-col:hover{background:#e2e8f0;color:#334155}',
+      '.sortable-col:focus-visible{box-shadow:inset 0 0 0 2px #0f766e}',
+      '.sortable-col.active{background:#ccfbf1;color:#0f766e}',
+      '.sortable-col.sort-disabled{cursor:not-allowed;opacity:.55}',
+      '.sortable-col.sort-disabled:hover{background:inherit;color:inherit}',
+      '.sort-indicator{margin-left:auto;min-width:12px;text-align:center;font-size:10px;color:#94a3b8}',
+      '.sortable-col.active .sort-indicator{color:#0f766e}',
       '.list-scroll{flex:1 1 auto;min-height:0;min-width:1196px;overflow-y:auto;overscroll-behavior:contain}',
       '.result-row{min-height:42px;border-bottom:1px solid #eef2f7;font-size:12px}',
       '.result-row>div{padding:8px 10px;min-width:0;overflow-wrap:anywhere}',
@@ -859,7 +879,7 @@
       '      <div class="message" id="message"></div>',
       '    </div>',
       '    <div class="list-wrap">',
-      '      <div class="list-head"><div class="select-col select-all-cell" id="select-all-cell" title="処理対象を全選択 / 全解除"><input type="checkbox" id="select-all" aria-label="処理対象を全選択または全解除"></div><div>素材番号</div><div>素材タイトル</div><div>結果 / 状態</div><div>削除日</div><div>預入日</div><div>詳細</div></div>',
+      '      <div class="list-head"><div class="select-col select-all-cell" id="select-all-cell" title="処理対象を全選択 / 全解除"><input type="checkbox" id="select-all" aria-label="処理対象を全選択または全解除"></div><div class="sortable-col" data-sort-key="no" role="button" tabindex="0" aria-sort="none"><span>素材番号</span><span class="sort-indicator" aria-hidden="true">↕</span></div><div class="sortable-col" data-sort-key="title" role="button" tabindex="0" aria-sort="none"><span>素材タイトル</span><span class="sort-indicator" aria-hidden="true">↕</span></div><div class="sortable-col" data-sort-key="status" role="button" tabindex="0" aria-sort="none"><span>結果 / 状態</span><span class="sort-indicator" aria-hidden="true">↕</span></div><div class="sortable-col" data-sort-key="delNote" role="button" tabindex="0" aria-sort="none"><span>削除日</span><span class="sort-indicator" aria-hidden="true">↕</span></div><div class="sortable-col" data-sort-key="depNote" role="button" tabindex="0" aria-sort="none"><span>預入日</span><span class="sort-indicator" aria-hidden="true">↕</span></div><div class="sortable-col" data-sort-key="reason" role="button" tabindex="0" aria-sort="none"><span>詳細</span><span class="sort-indicator" aria-hidden="true">↕</span></div></div>',
       '      <div class="list-scroll" id="list-scroll"></div>',
       '    </div>',
       '    <div class="footer">',
@@ -886,6 +906,14 @@
     $('select-all-cell').addEventListener('click', function (e) {
       if (running || $('select-all').disabled || e.target === $('select-all')) return;
       $('select-all').click();
+    });
+    Array.from(shadow.querySelectorAll('.sortable-col')).forEach(function (el) {
+      el.addEventListener('click', function () { cycleSort(el.dataset.sortKey); });
+      el.addEventListener('keydown', function (e) {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        cycleSort(el.dataset.sortKey);
+      });
     });
     Array.from(shadow.querySelectorAll('input[name="mode"]')).forEach(function (el) {
       el.addEventListener('change', function () {
@@ -1077,6 +1105,114 @@
     return !message;
   }
 
+
+  // ===== 一覧ソート ==========================================================
+  // ソートはツール一覧のDOM表示順だけを変更する。
+  // rowModels / currentContext / order は変更せず、実行対象・実処理順・安全照合へ影響させない。
+  function isEmptySortValue(value) {
+    if (value == null) return true;
+    var text = String(value).trim();
+    return text === '' || text === '-' || text === '—';
+  }
+
+  function getSortValue(model, key) {
+    if (!model) return '';
+    switch (key) {
+      case 'no': return model.no;
+      case 'title': return model.title;
+      case 'status': return model.status;
+      case 'delNote': return model.delNote;
+      case 'depNote': return model.depNote;
+      case 'reason': return model.reason;
+      default: return '';
+    }
+  }
+
+  function compareSortText(a, b) {
+    var aa = String(a);
+    var bb = String(b);
+    if (sortCollator) return sortCollator.compare(aa, bb);
+    return aa.localeCompare(bb);
+  }
+
+  function compareModelsForSort(a, b, key, direction) {
+    var av = getSortValue(a, key);
+    var bv = getSortValue(b, key);
+    var aEmpty = isEmptySortValue(av);
+    var bEmpty = isEmptySortValue(bv);
+
+    // 値なしは最小値扱い。昇順では先頭、降順では末尾に置く。
+    if (aEmpty || bEmpty) {
+      if (aEmpty && bEmpty) return a.order - b.order;
+      if (direction === 'asc') return aEmpty ? -1 : 1;
+      return aEmpty ? 1 : -1;
+    }
+
+    var cmp = compareSortText(av, bv);
+    if (cmp !== 0) return direction === 'desc' ? -cmp : cmp;
+
+    // 同値は元の画面順(order)で固定し、クリックのたびに順序が揺れないようにする。
+    return a.order - b.order;
+  }
+
+  function getDisplayModels() {
+    var models = rowModels.slice();
+    if (!sortState.key || !sortState.direction) {
+      return models.sort(function (a, b) { return a.order - b.order; });
+    }
+    return models.sort(function (a, b) {
+      return compareModelsForSort(a, b, sortState.key, sortState.direction);
+    });
+  }
+
+  function updateSortHeaders() {
+    if (!shadow) return;
+    Array.from(shadow.querySelectorAll('.sortable-col')).forEach(function (el) {
+      var key = el.dataset.sortKey;
+      var active = sortState.key === key && !!sortState.direction;
+      var indicator = el.querySelector('.sort-indicator');
+      el.classList.toggle('active', active);
+      el.classList.toggle('sort-disabled', running);
+      el.setAttribute('aria-disabled', running ? 'true' : 'false');
+      el.setAttribute('aria-sort', active
+        ? (sortState.direction === 'asc' ? 'ascending' : 'descending')
+        : 'none');
+      if (indicator) indicator.textContent = active
+        ? (sortState.direction === 'asc' ? '▲' : '▼')
+        : '↕';
+      el.title = running
+        ? '実行中はソートを変更できません'
+        : (active
+          ? (sortState.direction === 'asc' ? '昇順でソート中。クリックで降順' : '降順でソート中。クリックでソート解除')
+          : 'クリックで昇順ソート');
+    });
+  }
+
+  function applyRowSort() {
+    if (!shadow) return;
+    var list = $('list-scroll');
+    if (!list) return;
+    getDisplayModels().forEach(function (model) {
+      var row = rowEls.get(model.order);
+      if (row) list.appendChild(row);
+    });
+    updateSortHeaders();
+  }
+
+  function cycleSort(key) {
+    if (running || !key) return;
+    if (sortState.key !== key) {
+      sortState = { key: key, direction: 'asc' };
+    } else if (sortState.direction === 'asc') {
+      sortState = { key: key, direction: 'desc' };
+    } else if (sortState.direction === 'desc') {
+      sortState = { key: null, direction: null };
+    } else {
+      sortState = { key: key, direction: 'asc' };
+    }
+    applyRowSort();
+  }
+
   function rowInitialModel(item) {
     if (item.kind === 'blankThumbnail') {
       return {
@@ -1258,7 +1394,9 @@
     $('state-title').textContent = '実行内容を確認してください';
     $('current').textContent = '';
     $('footer-note').textContent = '対象一覧と設定日を確認してから実行してください。';
+    sortState = { key: null, direction: null };
     renderRows(ctx);
+    applyRowSort();
     updateDetectedInfo();
     refreshPreRunMessage();
     validateConfig();
@@ -1717,6 +1855,7 @@
       return;
     }
     running = true;
+    updateSortHeaders();
     ensureTimer();
     installExecutionGuard();
 
@@ -1824,6 +1963,7 @@
     $('btn-close').disabled = false;
     $('btn-close').style.display = '';
     $('btn-run').style.display = 'none';
+    applyRowSort();
 
     // 画面に表示している全素材をそのまま結果として保存する。
     // 予期しない中断があった場合も「処理中 / 待機中」の行を欠落させない。
@@ -1869,6 +2009,7 @@
       launchSnapshot = null;
       rowModels = [];
       rowEls.clear();
+      sortState = { key: null, direction: null };
       try { delete window[TOOL_GLOBAL]; } catch (e) { window[TOOL_GLOBAL] = null; }
       return true;
     },
