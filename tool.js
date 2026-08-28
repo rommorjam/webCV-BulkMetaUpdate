@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * webCV 削除日ザオリク
+ * webCV 削除日延長ツール
  * Version 1.0.17
  * ============================================================================
  * targetCode.js v5 の更新エンジンをベースに、ブックマークレット配布用のUIを追加。
@@ -348,7 +348,7 @@
     if (!screen) {
       return {
         ok: false,
-        message: '削除日のザオリクは、webCVの素材検索画面または\nコンテナ画面で実行してください。'
+        message: '素材をザオリクする場合は、webCVの素材検索画面または\nコンテナ画面で実行してください。'
       };
     }
 
@@ -856,9 +856,9 @@
       '@media(max-width:760px){.panel{height:94vh;max-width:98vw}.config{grid-template-columns:1fr 1fr}.mode-field{grid-column:1/-1}.list-head,.result-row{grid-template-columns:36px 120px 360px 130px 80px 100px 280px}.list-head,.list-scroll{min-width:1106px}}',
       '</style>',
       '<div class="overlay">',
-      '  <div class="panel" role="dialog" aria-modal="true" aria-label="webCV 削除日ザオリク">',
+      '  <div class="panel" role="dialog" aria-modal="true" aria-label="webCV 削除日延長ツール">',
       '    <div class="titlebar">',
-      '      <h1>webCV 削除日ザオリク</h1>',
+      '      <h1>webCV 削除日延長ツール</h1>',
       '      <span class="version">Ver. ' + TOOL_VERSION + '</span>',
       '      <button class="xbtn" id="btn-x" aria-label="閉じる" title="閉じる">×</button>',
       '    </div>',
