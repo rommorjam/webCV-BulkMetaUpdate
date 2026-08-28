@@ -1,7 +1,7 @@
 /**
  * ============================================================================
  * CVホイミン
- * Version 1.0.20
+ * Version 1.0.21
  * ============================================================================
  * targetCode.js v5 の更新エンジンをベースに、ブックマークレット配布用のUIを追加。
  *
@@ -37,7 +37,7 @@
 (function () {
   'use strict';
 
-  var TOOL_VERSION = '1.0.20';
+  var TOOL_VERSION = '1.0.21';
   var TOOL_GLOBAL = '__cvDateBatchTool';
   var RESULT_GLOBAL = '__cvDeleteDateResults';
 
@@ -874,8 +874,8 @@
       '.message.info{background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af}',
       '.message.warn{background:#fffbeb;border:1px solid #fde68a;color:#92400e;font-weight:600}',
       '.list-wrap{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;background:#fff;overflow-x:auto;overflow-y:hidden}',
-      '.list-head,.result-row{display:grid;grid-template-columns:36px 120px 400px 140px 80px 100px 320px;align-items:center}',
-      '.list-head{flex:0 0 auto;min-width:1196px;background:#f1f5f9;border-bottom:1px solid #cbd5e1;font-size:11px;font-weight:700;color:#475569}',
+      '.list-head,.result-row{display:grid;grid-template-columns:36px 120px 400px 140px 110px 110px 320px;align-items:center}',
+      '.list-head{flex:0 0 auto;min-width:1236px;background:#f1f5f9;border-bottom:1px solid #cbd5e1;font-size:11px;font-weight:700;color:#475569}',
       '.list-head>div{padding:8px 10px;border-right:1px solid #e2e8f0}',
       '.sortable-col{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;outline:none}',
       '.sortable-col:hover{background:#e2e8f0;color:#334155}',
@@ -885,7 +885,7 @@
       '.sortable-col.sort-disabled:hover{background:inherit;color:inherit}',
       '.sort-indicator{margin-left:auto;min-width:12px;text-align:center;font-size:10px;color:#94a3b8}',
       '.sortable-col.active .sort-indicator{color:#0f766e}',
-      '.list-scroll{flex:1 1 auto;min-height:0;min-width:1196px;overflow-y:auto;overscroll-behavior:contain}',
+      '.list-scroll{flex:1 1 auto;min-height:0;min-width:1236px;overflow-y:auto;overscroll-behavior:contain}',
       '.result-row{min-height:42px;border-bottom:1px solid #eef2f7;font-size:12px}',
       '.result-row>div{padding:8px 10px;min-width:0;overflow-wrap:anywhere}',
       '.select-col{display:flex;align-items:center;justify-content:center;padding:0!important;min-width:0}',
@@ -910,7 +910,7 @@
       '.btn-primary:hover{background:#0d5f59}',
       '.btn:disabled{opacity:.45;cursor:not-allowed}',
       '.btn:disabled:hover{background:inherit}',
-      '@media(max-width:760px){.panel{height:94vh;max-width:98vw}.config{grid-template-columns:1fr 1fr}.mode-field{grid-column:1/-1}.list-head,.result-row{grid-template-columns:36px 120px 360px 130px 80px 100px 280px}.list-head,.list-scroll{min-width:1106px}}',
+      '@media(max-width:760px){.panel{height:94vh;max-width:98vw}.config{grid-template-columns:1fr 1fr}.mode-field{grid-column:1/-1}.list-head,.result-row{grid-template-columns:36px 120px 360px 130px 110px 110px 280px}.list-head,.list-scroll{min-width:1146px}}',
       '</style>',
       '<div class="overlay">',
       '  <div class="panel" role="dialog" aria-modal="true" aria-label="CVホイミン">',
