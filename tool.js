@@ -885,7 +885,7 @@
       '    <div class="footer">',
       '      <div class="footer-note" id="footer-note">実行中はこのタブを閉じたり、webCVを操作しないでください。</div>',
       '      <button class="btn" id="btn-close">閉じる</button>',
-      '      <button class="btn btn-primary" id="btn-run">バルス！！</button>',
+      '      <button class="btn btn-primary" id="btn-run">龍一郎おぉぉ！</button>',
       '    </div>',
       '  </div>',
       '</div>'
@@ -1390,7 +1390,7 @@
     $('btn-close').disabled = false;
     $('btn-close').style.display = '';
     $('btn-run').style.display = '';
-    $('btn-run').textContent = 'バルス！！';
+    $('btn-run').textContent = '龍一郎おぉぉ！';
     $('state-title').textContent = '実行内容を確認してください';
     $('current').textContent = '';
     $('footer-note').textContent = '対象一覧と設定日を確認してから実行してください。';
