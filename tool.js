@@ -1,7 +1,7 @@
 /**
  * ============================================================================
  * CVホイミン
- * Version 1.0.19
+ * Version 1.0.20
  * ============================================================================
  * targetCode.js v5 の更新エンジンをベースに、ブックマークレット配布用のUIを追加。
  *
@@ -17,7 +17,7 @@
  * - サムネイル枠src空 + 素材タイトル空は、ユーザー表示上「削除済み」としてスキップ
  * - Not Filed サムネイルでも素材タイトル有 + Errorなしなら通常素材と同じ処理対象
  * - リスト表示では「素材タイトル」列の表示を必須とし、列が無ければ実行しない
- * - リスト表示では一覧の「削除日」「預入日」を任意取得し、ツール一覧の初期日付として表示（列なし/空欄は—、実行可否には影響しない）
+ * - リスト表示では一覧の「削除予定日」「アーカイブ預入予定日」を任意取得し、旧名称「削除日」「預入日」も互換候補として扱う（列なし/空欄は—、実行可否には影響しない）
  * - ツール一覧の「削除日」「預入日」は常に最後に確認できた実日付を表示し、処理内容は「結果 / 状態」「詳細」に集約
  * - 起動時の削除日・預入日は空欄。削除日は常に必須、モード2では預入日も必須
  * - モード2で預入日が空欄なら、削除日選択時またはモード2切替時に削除日前日を自動補完（実行日より前になる場合は補完しない）
@@ -37,7 +37,7 @@
 (function () {
   'use strict';
 
-  var TOOL_VERSION = '1.0.19';
+  var TOOL_VERSION = '1.0.20';
   var TOOL_GLOBAL = '__cvDateBatchTool';
   var RESULT_GLOBAL = '__cvDeleteDateResults';
 
@@ -219,20 +219,30 @@
 
   // リスト表示の日付は、画面種別ごとの内部DOM(class等)に依存せず、
   // ヘッダ名から列位置を特定して同一行のセル文字列を取得する。
-  // 「削除日」「預入日」列は任意扱いとし、列が無い場合もツール実行は妨げない。
-  function getListColumnText(scope, label) {
+  // 実画面の正式名称を優先しつつ、旧名称も互換候補として扱う。
+  // 日付列は任意扱いとし、列が無い場合もツール実行は妨げない。
+  function getListColumnText(scope, labels) {
     if (!scope || !scope.closest) return { available: false, value: '' };
     var table = scope.closest('table.search-list');
     if (!table) return { available: false, value: '' };
-    var headers = Array.from(table.querySelectorAll('thead th, thead td')).filter(function (cell) {
-      return (cell.innerText || cell.textContent || '').trim() === label;
-    });
-    if (headers.length !== 1) return { available: false, value: '' };
 
-    var index = headers[0].cellIndex;
-    var cell = scope.cells && scope.cells[index];
-    if (!cell) return { available: false, value: '' };
-    return { available: true, value: String(cell.textContent || '').trim() };
+    var candidates = Array.isArray(labels) ? labels : [labels];
+    var headerCells = Array.from(table.querySelectorAll('thead th, thead td'));
+    for (var i = 0; i < candidates.length; i++) {
+      var label = candidates[i];
+      var headers = headerCells.filter(function (cell) {
+        return (cell.innerText || cell.textContent || '').trim() === label;
+      });
+      if (headers.length > 1) return { available: false, value: '' };
+      if (headers.length === 1) {
+        var index = headers[0].cellIndex;
+        var cell = scope.cells && scope.cells[index];
+        if (!cell) return { available: false, value: '' };
+        return { available: true, value: String(cell.textContent || '').trim() };
+      }
+    }
+
+    return { available: false, value: '' };
   }
 
   function normalizeListDateDisplay(raw) {
@@ -664,8 +674,8 @@
       });
       var previewTrigger = findPreviewTrigger(tile, collected.viewMode);
       var titleInfo = getMaterialTitleInfo(tile, collected.viewMode);
-      var deleteDateInfo = getListDateInfo(tile, collected.viewMode, '削除日');
-      var depositDateInfo = getListDateInfo(tile, collected.viewMode, '預入日');
+      var deleteDateInfo = getListDateInfo(tile, collected.viewMode, ['削除予定日', '削除日']);
+      var depositDateInfo = getListDateInfo(tile, collected.viewMode, ['アーカイブ預入予定日', '預入日']);
       var blankThumbnail = titleInfo.available && titleInfo.value === '' && hasBlankThumbnailFrame(tile);
 
       var unknownReason = '';
