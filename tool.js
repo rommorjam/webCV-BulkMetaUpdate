@@ -1,7 +1,7 @@
 /**
  * ============================================================================
- * CVホイミン — 削除日延長ツール
- * Version 1.0.21
+ * CVホイミン
+ * Version 1.0.22
  * ============================================================================
  * targetCode.js v5 の更新エンジンをベースに、ブックマークレット配布用のUIを追加。
  *
@@ -20,7 +20,7 @@
  * - リスト表示では一覧の「削除予定日」「アーカイブ預入予定日」を任意取得し、旧名称「削除日」「預入日」も互換候補として扱う（列なし/空欄は—、実行可否には影響しない）
  * - ツール一覧の「削除日」「預入日」は常に最後に確認できた実日付を表示し、処理内容は「結果 / 状態」「詳細」に集約
  * - 起動時の削除日・預入日は空欄。削除日は常に必須、モード2では預入日も必須
- * - モード2で預入日が空欄なら、削除日選択時またはモード2切替時に削除日前日を自動補完（実行日より前になる場合は補完しない）
+ * - モード2では削除日選択時またはモード2切替時に預入日を必ず削除日前日へ連動（既存入力値も上書き。実行日より前になる場合は空欄）
  * - 日付入力欄のクリックでもネイティブ日付選択カレンダーを開く（showPicker対応ブラウザ）
  * - 削除日・預入日はツール実行日以降のみ選択可能
  * - 削除日 > 預入日 を必須条件とする
@@ -37,7 +37,7 @@
 (function () {
   'use strict';
 
-  var TOOL_VERSION = '1.0.21';
+  var TOOL_VERSION = '1.0.22';
   var TOOL_GLOBAL = '__cvDateBatchTool';
   var RESULT_GLOBAL = '__cvDeleteDateResults';
 
@@ -913,9 +913,9 @@
       '@media(max-width:760px){.panel{height:94vh;max-width:98vw}.config{grid-template-columns:1fr 1fr}.mode-field{grid-column:1/-1}.list-head,.result-row{grid-template-columns:36px 120px 360px 130px 110px 110px 280px}.list-head,.list-scroll{min-width:1146px}}',
       '</style>',
       '<div class="overlay">',
-      '  <div class="panel" role="dialog" aria-modal="true" aria-label="CVホイミン — 削除日延長ツール">',
+      '  <div class="panel" role="dialog" aria-modal="true" aria-label="CVホイミン">',
       '    <div class="titlebar">',
-      '      <h1>CVホイミン — 削除日延長ツール</h1>',
+      '      <h1>CVホイミン</h1>',
       '      <span class="version">Ver. ' + TOOL_VERSION + '</span>',
       '      <button class="xbtn" id="btn-x" aria-label="閉じる" title="閉じる">×</button>',
       '    </div>',
@@ -926,7 +926,7 @@
       '        <label><span class="field-label">削除日</span><input type="date" id="delete-date" required aria-required="true"></label>',
       '        <label><span class="field-label">預入日</span><input type="date" id="deposit-date"></label>',
       '      </div>',
-      '      <div class="rule"><strong>削除日は入力必須</strong>です。「削除日＋預入日を更新」では<strong>預入日も入力必須</strong>です。日付ルール: 削除日・預入日はツール実行日以降、かつ 削除日 &gt; 預入日。</div>',
+      '      <div class="rule"><strong>削除日は入力必須</strong>です。「削除日＋預入日を更新」では<strong>預入日も入力必須</strong>です。日付ルール: 削除日・預入日はツール実行日以降、かつ 削除日 &gt; 預入日。削除日変更時は預入日を前日に連動します。</div>',
       '      <div class="validation" id="validation"></div>',
       '    </div>',
       '    <div class="summary">',
@@ -954,11 +954,11 @@
     $('btn-close').addEventListener('click', closeTool);
     $('btn-run').addEventListener('click', startRun);
     $('delete-date').addEventListener('input', function () {
-      autoFillDepositDateIfNeeded();
+      syncDepositDateToPreviousDay();
       validateConfig();
     });
     $('delete-date').addEventListener('change', function () {
-      autoFillDepositDateIfNeeded();
+      syncDepositDateToPreviousDay();
       validateConfig();
     });
     $('deposit-date').addEventListener('input', validateConfig);
@@ -981,7 +981,7 @@
     Array.from(shadow.querySelectorAll('input[name="mode"]')).forEach(function (el) {
       el.addEventListener('change', function () {
         $('deposit-date').disabled = getMode() !== '2';
-        autoFillDepositDateIfNeeded();
+        syncDepositDateToPreviousDay();
         validateConfig();
       });
     });
@@ -1000,22 +1000,35 @@
     return checked ? checked.value : '2';
   }
 
-  // モード2で預入日が未入力の場合のみ、削除日の前日を補完する。
-  // ユーザーが入力済みの預入日は自動変更せず、前日が実行日より前になる場合も補完しない。
-  function autoFillDepositDateIfNeeded() {
+  // モード2では削除日を基準に、預入日を常に削除日の前日へ連動させる。
+  // 既に預入日が入力されていても削除日変更時は上書きする。
+  // 削除日未入力、または前日がツール実行日より前になる場合は預入日を空欄にする。
+  function syncDepositDateToPreviousDay() {
     if (!shadow || getMode() !== '2') return false;
 
     var deleteInput = $('delete-date');
     var depositInput = $('deposit-date');
-    if (!deleteInput || !depositInput || !deleteInput.value || depositInput.value) return false;
+    if (!deleteInput || !depositInput) return false;
+
+    if (!deleteInput.value) {
+      var hadValue = !!depositInput.value;
+      depositInput.value = '';
+      return hadValue;
+    }
 
     var parts = deleteInput.value.split('-').map(Number);
     if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) return false;
 
     var deleteDate = new Date(parts[0], parts[1] - 1, parts[2]);
     var previousIso = isoLocal(addLocalDays(deleteDate, -1));
-    if (executionDateIso && previousIso < executionDateIso) return false;
 
+    if (executionDateIso && previousIso < executionDateIso) {
+      var hadInvalidValue = !!depositInput.value;
+      depositInput.value = '';
+      return hadInvalidValue;
+    }
+
+    if (depositInput.value === previousIso) return false;
     depositInput.value = previousIso;
     return true;
   }
