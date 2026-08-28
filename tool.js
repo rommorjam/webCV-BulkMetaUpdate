@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * webCV 削除日延長バルス
+ * webCV 削除日ザオリク
  * Version 1.0.17
  * ============================================================================
  * targetCode.js v5 の更新エンジンをベースに、ブックマークレット配布用のUIを追加。
@@ -348,7 +348,7 @@
     if (!screen) {
       return {
         ok: false,
-        message: '削除日延長バルスは、webCVの素材検索画面または\nコンテナ画面で実行してください。'
+        message: '削除日のザオリクは、webCVの素材検索画面または\nコンテナ画面で実行してください。'
       };
     }
 
@@ -856,9 +856,9 @@
       '@media(max-width:760px){.panel{height:94vh;max-width:98vw}.config{grid-template-columns:1fr 1fr}.mode-field{grid-column:1/-1}.list-head,.result-row{grid-template-columns:36px 120px 360px 130px 80px 100px 280px}.list-head,.list-scroll{min-width:1106px}}',
       '</style>',
       '<div class="overlay">',
-      '  <div class="panel" role="dialog" aria-modal="true" aria-label="webCV 削除日延長バルス">',
+      '  <div class="panel" role="dialog" aria-modal="true" aria-label="webCV 削除日ザオリク">',
       '    <div class="titlebar">',
-      '      <h1>webCV 削除日延長バルス</h1>',
+      '      <h1>webCV 削除日ザオリク</h1>',
       '      <span class="version">Ver. ' + TOOL_VERSION + '</span>',
       '      <button class="xbtn" id="btn-x" aria-label="閉じる" title="閉じる">×</button>',
       '    </div>',
@@ -885,7 +885,7 @@
       '    <div class="footer">',
       '      <div class="footer-note" id="footer-note">実行中はこのタブを閉じたり、webCVを操作しないでください。</div>',
       '      <button class="btn" id="btn-close">閉じる</button>',
-      '      <button class="btn btn-primary" id="btn-run">龍一郎おぉぉ！</button>',
+      '      <button class="btn btn-primary" id="btn-run">ザオリク！</button>',
       '    </div>',
       '  </div>',
       '</div>'
@@ -1390,7 +1390,7 @@
     $('btn-close').disabled = false;
     $('btn-close').style.display = '';
     $('btn-run').style.display = '';
-    $('btn-run').textContent = '龍一郎おぉぉ！';
+    $('btn-run').textContent = 'ザオリク！';
     $('state-title').textContent = '実行内容を確認してください';
     $('current').textContent = '';
     $('footer-note').textContent = '対象一覧と設定日を確認してから実行してください。';
