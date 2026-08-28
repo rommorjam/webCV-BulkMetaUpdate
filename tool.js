@@ -1,7 +1,7 @@
 /**
  * ============================================================================
  * webCV素材をザオリクする
- * Version 1.0.17
+ * Version 1.0.18
  * ============================================================================
  * targetCode.js v5 の更新エンジンをベースに、ブックマークレット配布用のUIを追加。
  *
@@ -18,6 +18,7 @@
  * - Not Filed サムネイルでも素材タイトル有 + Errorなしなら通常素材と同じ処理対象
  * - リスト表示では「素材タイトル」列の表示を必須とし、列が無ければ実行しない
  * - 起動時の削除日・預入日は空欄。削除日は常に必須、モード2では預入日も必須
+ * - モード2で預入日が空欄なら、削除日選択時またはモード2切替時に削除日前日を自動補完（実行日より前になる場合は補完しない）
  * - 日付入力欄のクリックでもネイティブ日付選択カレンダーを開く（showPicker対応ブラウザ）
  * - 削除日・預入日はツール実行日以降のみ選択可能
  * - 削除日 > 預入日 を必須条件とする
@@ -34,7 +35,7 @@
 (function () {
   'use strict';
 
-  var TOOL_VERSION = '1.0.17';
+  var TOOL_VERSION = '1.0.18';
   var TOOL_GLOBAL = '__cvDateBatchTool';
   var RESULT_GLOBAL = '__cvDeleteDateResults';
 
@@ -896,8 +897,14 @@
     $('btn-x').addEventListener('click', closeTool);
     $('btn-close').addEventListener('click', closeTool);
     $('btn-run').addEventListener('click', startRun);
-    $('delete-date').addEventListener('input', validateConfig);
-    $('delete-date').addEventListener('change', validateConfig);
+    $('delete-date').addEventListener('input', function () {
+      autoFillDepositDateIfNeeded();
+      validateConfig();
+    });
+    $('delete-date').addEventListener('change', function () {
+      autoFillDepositDateIfNeeded();
+      validateConfig();
+    });
     $('deposit-date').addEventListener('input', validateConfig);
     $('deposit-date').addEventListener('change', validateConfig);
     $('delete-date').addEventListener('click', function () { openNativeDatePicker($('delete-date')); });
@@ -918,6 +925,7 @@
     Array.from(shadow.querySelectorAll('input[name="mode"]')).forEach(function (el) {
       el.addEventListener('change', function () {
         $('deposit-date').disabled = getMode() !== '2';
+        autoFillDepositDateIfNeeded();
         validateConfig();
       });
     });
@@ -934,6 +942,26 @@
   function getMode() {
     var checked = shadow.querySelector('input[name="mode"]:checked');
     return checked ? checked.value : '2';
+  }
+
+  // モード2で預入日が未入力の場合のみ、削除日の前日を補完する。
+  // ユーザーが入力済みの預入日は自動変更せず、前日が実行日より前になる場合も補完しない。
+  function autoFillDepositDateIfNeeded() {
+    if (!shadow || getMode() !== '2') return false;
+
+    var deleteInput = $('delete-date');
+    var depositInput = $('deposit-date');
+    if (!deleteInput || !depositInput || !deleteInput.value || depositInput.value) return false;
+
+    var parts = deleteInput.value.split('-').map(Number);
+    if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) return false;
+
+    var deleteDate = new Date(parts[0], parts[1] - 1, parts[2]);
+    var previousIso = isoLocal(addLocalDays(deleteDate, -1));
+    if (executionDateIso && previousIso < executionDateIso) return false;
+
+    depositInput.value = previousIso;
+    return true;
   }
 
   function openNativeDatePicker(input) {
