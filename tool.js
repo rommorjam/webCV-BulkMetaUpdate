@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * CVホイミン — 削除日延長ツール
+ * CVホイミン — 削除日回復ツール
  * Version 1.0.23
  * ============================================================================
  * targetCode.js v5 の更新エンジンをベースに、ブックマークレット配布用のUIを追加。
@@ -914,9 +914,9 @@
       '@media(max-width:1280px){.panel{height:94vh;max-width:100%}.config{grid-template-columns:1fr 1fr}.mode-field{grid-column:1/-1}.list-head,.result-row{grid-template-columns:36px 120px 360px 130px 110px 110px 280px}.list-head,.list-scroll{min-width:1146px}}',
       '</style>',
       '<div class="overlay">',
-      '  <div class="panel" role="dialog" aria-modal="true" aria-label="CVホイミン — 削除日延長ツール">',
+      '  <div class="panel" role="dialog" aria-modal="true" aria-label="CVホイミン — 削除日回復ツール">',
       '    <div class="titlebar">',
-      '      <h1>CVホイミン — 削除日延長ツール</h1>',
+      '      <h1>CVホイミン — 削除日回復ツール</h1>',
       '      <span class="version">Ver. ' + TOOL_VERSION + '</span>',
       '      <button class="xbtn" id="btn-x" aria-label="閉じる" title="閉じる">×</button>',
       '    </div>',
