@@ -1,7 +1,7 @@
 /**
  * ============================================================================
  * webCV素材をザオリクする
- * Version 1.0.18
+ * Version 1.0.19
  * ============================================================================
  * targetCode.js v5 の更新エンジンをベースに、ブックマークレット配布用のUIを追加。
  *
@@ -17,6 +17,8 @@
  * - サムネイル枠src空 + 素材タイトル空は、ユーザー表示上「削除済み」としてスキップ
  * - Not Filed サムネイルでも素材タイトル有 + Errorなしなら通常素材と同じ処理対象
  * - リスト表示では「素材タイトル」列の表示を必須とし、列が無ければ実行しない
+ * - リスト表示では一覧の「削除日」「預入日」を任意取得し、ツール一覧の初期日付として表示（列なし/空欄は—、実行可否には影響しない）
+ * - ツール一覧の「削除日」「預入日」は常に最後に確認できた実日付を表示し、処理内容は「結果 / 状態」「詳細」に集約
  * - 起動時の削除日・預入日は空欄。削除日は常に必須、モード2では預入日も必須
  * - モード2で預入日が空欄なら、削除日選択時またはモード2切替時に削除日前日を自動補完（実行日より前になる場合は補完しない）
  * - 日付入力欄のクリックでもネイティブ日付選択カレンダーを開く（showPicker対応ブラウザ）
@@ -35,7 +37,7 @@
 (function () {
   'use strict';
 
-  var TOOL_VERSION = '1.0.18';
+  var TOOL_VERSION = '1.0.19';
   var TOOL_GLOBAL = '__cvDateBatchTool';
   var RESULT_GLOBAL = '__cvDeleteDateResults';
 
@@ -213,6 +215,42 @@
     var cell = scope.cells && scope.cells[index];
     if (!cell) return { available: false, value: '' };
     return { available: true, value: (cell.textContent || '').trim() };
+  }
+
+  // リスト表示の日付は、画面種別ごとの内部DOM(class等)に依存せず、
+  // ヘッダ名から列位置を特定して同一行のセル文字列を取得する。
+  // 「削除日」「預入日」列は任意扱いとし、列が無い場合もツール実行は妨げない。
+  function getListColumnText(scope, label) {
+    if (!scope || !scope.closest) return { available: false, value: '' };
+    var table = scope.closest('table.search-list');
+    if (!table) return { available: false, value: '' };
+    var headers = Array.from(table.querySelectorAll('thead th, thead td')).filter(function (cell) {
+      return (cell.innerText || cell.textContent || '').trim() === label;
+    });
+    if (headers.length !== 1) return { available: false, value: '' };
+
+    var index = headers[0].cellIndex;
+    var cell = scope.cells && scope.cells[index];
+    if (!cell) return { available: false, value: '' };
+    return { available: true, value: String(cell.textContent || '').trim() };
+  }
+
+  function normalizeListDateDisplay(raw) {
+    var text = String(raw == null ? '' : raw).trim();
+    if (!text || text === '-' || text === '—') return '';
+    var m = text.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})$/);
+    if (!m) return text;
+    return m[1] + '/' + String(Number(m[2])).padStart(2, '0') + '/' +
+      String(Number(m[3])).padStart(2, '0');
+  }
+
+  function getListDateInfo(scope, viewMode, label) {
+    if (viewMode !== 'list') return { available: false, value: '' };
+    var info = getListColumnText(scope, label);
+    return {
+      available: !!info.available,
+      value: info.available ? normalizeListDateDisplay(info.value) : ''
+    };
   }
 
   function hasBlankThumbnailFrame(scope) {
@@ -626,6 +664,8 @@
       });
       var previewTrigger = findPreviewTrigger(tile, collected.viewMode);
       var titleInfo = getMaterialTitleInfo(tile, collected.viewMode);
+      var deleteDateInfo = getListDateInfo(tile, collected.viewMode, '削除日');
+      var depositDateInfo = getListDateInfo(tile, collected.viewMode, '預入日');
       var blankThumbnail = titleInfo.available && titleInfo.value === '' && hasBlankThumbnailFrame(tile);
 
       var unknownReason = '';
@@ -651,6 +691,10 @@
         materialTypeLabel: entry.materialTypeLabel || (screen === 'search' ? '元素材' : 'コンテナ'),
         titleAvailable: !!titleInfo.available,
         title: titleInfo.available ? titleInfo.value : null,
+        listDeleteDateAvailable: !!deleteDateInfo.available,
+        listDeleteDate: deleteDateInfo.available ? deleteDateInfo.value : '',
+        listDepositDateAvailable: !!depositDateInfo.available,
+        listDepositDate: depositDateInfo.available ? depositDateInfo.value : '',
         blankThumbnail: !!blankThumbnail,
         fallbackLabel: fallbackText ? fallbackText.slice(0, 90) : '(番号不明 #' + (order + 1) + ')',
         fingerprint: noValue ? 'material:' + noValue.key : makeUnknownFingerprint(tile, order),
@@ -740,6 +784,8 @@
           noKey: i.noKey || null,
           materialType: i.materialType || null,
           fingerprint: i.fingerprint,
+          listDeleteDate: ctx.viewMode === 'list' ? (i.listDeleteDate || '') : null,
+          listDepositDate: ctx.viewMode === 'list' ? (i.listDepositDate || '') : null,
           isError: !!i.isError,
           kind: i.kind,
           hasPreviewTrigger: !!i.previewTrigger
@@ -1062,15 +1108,15 @@
       model.final = false;
       model.status = '待機中';
       model.statusClass = '';
-      model.delNote = '-';
-      model.depNote = '-';
+      model.delNote = model.initialDelNote;
+      model.depNote = model.initialDepNote;
       model.reason = '実行待ち';
     } else {
       model.final = true;
       model.status = 'スキップ(選択解除)';
       model.statusClass = 'skip';
-      model.delNote = '-';
-      model.depNote = '-';
+      model.delNote = model.initialDelNote;
+      model.depNote = model.initialDepNote;
       model.reason = 'ユーザー操作により処理対象から除外';
     }
   }
@@ -1242,44 +1288,47 @@
   }
 
   function rowInitialModel(item) {
+    var initialDel = item.listDeleteDate ? item.listDeleteDate : '-';
+    var initialDep = item.listDepositDate ? item.listDepositDate : '-';
+
     if (item.kind === 'blankThumbnail') {
       return {
         order: item.order, no: item.no || item.fallbackLabel || '(番号不明)', kind: item.kind, final: true,
-        status: 'スキップ(削除済み)', statusClass: 'skip', delNote: '-', depNote: '-',
+        status: 'スキップ(削除済み)', statusClass: 'skip', delNote: initialDel, depNote: initialDep,
         reason: 'サムネイルが空のため、削除済素材として処理対象外'
       };
     }
     if (item.kind === 'emptyTitle') {
       return {
         order: item.order, no: item.no || item.fallbackLabel || '(番号不明)', kind: item.kind, final: true,
-        status: 'スキップ(タイトル未設定)', statusClass: 'skip', delNote: '-', depNote: '-',
+        status: 'スキップ(タイトル未設定)', statusClass: 'skip', delNote: initialDel, depNote: initialDep,
         reason: '素材タイトルが未設定のため処理対象外'
       };
     }
     if (item.kind === 'duplicate') {
       return {
         order: item.order, no: item.no, kind: item.kind, final: true,
-        status: 'スキップ(重複)', statusClass: 'skip', delNote: '-', depNote: '-',
+        status: 'スキップ(重複)', statusClass: 'skip', delNote: initialDel, depNote: initialDep,
         reason: '同一素材番号のため代表1件のみ処理（更新は全てに反映される）'
       };
     }
     if (item.kind === 'excluded') {
       return {
         order: item.order, no: item.no || item.fallbackLabel || '(番号不明)', kind: item.kind, final: true,
-        status: '除外', statusClass: 'excluded', delNote: '-', depNote: '-',
+        status: '除外', statusClass: 'excluded', delNote: initialDel, depNote: initialDep,
         reason: 'Error バッジのため対象外'
       };
     }
     if (item.kind === 'unknown') {
       return {
         order: item.order, no: item.no || item.fallbackLabel || '(番号不明)', kind: item.kind, final: true,
-        status: 'スキップ', statusClass: 'skip', delNote: '-', depNote: '-',
+        status: 'スキップ', statusClass: 'skip', delNote: initialDel, depNote: initialDep,
         reason: item.unknownReason || '素材番号・素材タイトル・プレビュー起動要素のいずれかを取得できない'
       };
     }
     return {
       order: item.order, no: item.no, kind: item.kind, final: false,
-      status: '待機中', statusClass: '', delNote: '-', depNote: '-', reason: '実行待ち'
+      status: '待機中', statusClass: '', delNote: initialDel, depNote: initialDep, reason: '実行待ち'
     };
   }
 
@@ -1288,6 +1337,9 @@
     rowModels = ctx.items.map(function (item) {
       var model = rowInitialModel(item);
       model.title = item.title == null ? '' : String(item.title);
+      model.noKey = item.noKey || null;
+      model.initialDelNote = model.delNote;
+      model.initialDepNote = model.depNote;
       model.selectable = item.kind === 'target';
       model.selected = model.selectable;
       return model;
@@ -1368,6 +1420,23 @@
     Object.assign(model, patch);
     paintRow(model);
     updateSummary();
+  }
+
+  function updateMaterialDateDisplay(item, delIso, depIso) {
+    var delText = delIso ? displayIso(delIso) : '-';
+    var depText = depIso ? displayIso(depIso) : '-';
+    var matched = false;
+
+    rowModels.forEach(function (model) {
+      var sameMaterial = !!(item && item.noKey && model.noKey && item.noKey === model.noKey);
+      if (model.order !== item.order && !sameMaterial) return;
+      model.delNote = delText;
+      model.depNote = depText;
+      paintRow(model);
+      matched = true;
+    });
+
+    if (matched) updateSummary();
   }
 
   function updateSummary() {
@@ -1698,6 +1767,10 @@
     var curDel = delInp.value;
     var curDep = depInp ? depInp.value : '';
 
+    // リスト表示の初期値より管理情報の実値を正とする。
+    // この時点で確認できた日付へ更新し、以後エラーになっても「最後に確認できた実値」を残す。
+    updateMaterialDateDisplay(item, curDel, curDep);
+
     // 削除日延長専用ルール:
     // - 既存削除日が空欄の素材は、削除日・預入日とも変更せず素材全体をスキップする。
     // - 指定削除日が既存削除日より前なら「前倒し」とみなし、預入日も含めて一切変更しない。
@@ -1707,8 +1780,8 @@
       await closePreview();
       return {
         status: 'スキップ',
-        delNote: '未変更',
-        depNote: '未変更',
+        delNote: curDel ? displayIso(curDel) : '-',
+        depNote: curDep ? displayIso(curDep) : '-',
         reason: '既存削除日が未設定のため'
       };
     }
@@ -1717,8 +1790,8 @@
       await closePreview();
       return {
         status: 'スキップ',
-        delNote: '未変更',
-        depNote: '未変更',
+        delNote: displayIso(curDel),
+        depNote: curDep ? displayIso(curDep) : '-',
         reason: '削除日前倒し禁止: 既存削除日(' + displayIso(curDel) + ') > 指定削除日(' + del.disp + ')'
       };
     }
@@ -1732,27 +1805,33 @@
       await closePreview();
       return {
         status: 'スキップ',
-        delNote: '未変更',
-        depNote: '未変更',
+        delNote: displayIso(curDel),
+        depNote: curDep ? displayIso(curDep) : '-',
         reason: '制約違反回避: 削除日(' + del.disp + ') > 預入日(' + displayIso(finalDep) + ') を満たさないため'
       };
     }
 
     var needDep = willSetDep && curDep !== dep.iso;
-    var depNote;
+    var depMatchesRequested = mode === '2' && curDep === dep.iso;
+    var noChangeReason = '指定削除日は既存削除日と同一';
+    var noChangeStatus = 'スキップ(設定済み)';
 
-    if (mode === '1') depNote = '-';
-    else if (!depEditable) depNote = 'スキップ(アーカイブ' + archive + ')';
-    else if (!needDep) depNote = '設定済み';
-    else depNote = '設定';
+    if (mode === '2') {
+      if (!depEditable && !depMatchesRequested) {
+        noChangeReason += '・預入日更新スキップ(アーカイブ' + archive + ')';
+        noChangeStatus = 'スキップ';
+      } else if (depMatchesRequested) {
+        noChangeReason += '・預入日は指定値設定済み';
+      }
+    }
 
     if (!needDel && !needDep) {
       await closePreview();
       return {
-        status: 'スキップ(設定済み)',
-        delNote: '変更なし',
-        depNote: depNote,
-        reason: '指定削除日は既存削除日と同一'
+        status: noChangeStatus,
+        delNote: displayIso(curDel),
+        depNote: curDep ? displayIso(curDep) : '-',
+        reason: noChangeReason
       };
     }
 
@@ -1787,27 +1866,46 @@
     setPhase(item, '保存後の値を検証しています', attempt);
     var dAfter = getDoc();
     var delAfter = findDateInputByLabel(dAfter, '削除日');
+    var depAfter = findDateInputByLabel(dAfter, '預入日');
+
+    // 保存後に実際に観測できた値を最終表示候補として先に反映する。
+    // 想定値と不一致で失敗になっても、画面には最後に確認できた実値を残す。
+    var confirmedDel = delAfter ? delAfter.value : curDel;
+    var confirmedDep = depAfter ? depAfter.value : curDep;
+    updateMaterialDateDisplay(item, confirmedDel, confirmedDep);
+
     if (!delAfter || delAfter.value !== del.iso) {
       throw new Error('保存後の削除日が想定と異なる (' + (delAfter ? delAfter.value : '不明') + ')');
     }
 
-    if (needDep) {
-      var depAfter = findDateInputByLabel(dAfter, '預入日');
-      if (!depAfter || depAfter.value !== dep.iso) {
-        throw new Error('保存後の預入日が想定と異なる (' + (depAfter ? depAfter.value : '不明') + ')');
-      }
+    if (needDep && (!depAfter || depAfter.value !== dep.iso)) {
+      throw new Error('保存後の預入日が想定と異なる (' + (depAfter ? depAfter.value : '不明') + ')');
     }
 
     setPhase(item, 'プレビューを閉じています', attempt);
     await closePreview();
 
+    var successReason;
+    if (mode === '1') {
+      successReason = needDel ? '削除日延長' : '削除日変更なし';
+    } else if (!depEditable) {
+      successReason = (needDel ? '削除日延長' : '削除日変更なし') +
+        (depMatchesRequested
+          ? '・預入日は指定値設定済み'
+          : '・預入日更新スキップ(アーカイブ' + archive + ')');
+    } else if (needDel && needDep) {
+      successReason = '削除日延長・預入日更新';
+    } else if (needDel && !needDep) {
+      successReason = '削除日延長・預入日は指定値設定済み';
+    } else {
+      successReason = '削除日変更なし・預入日のみ更新';
+    }
+
     return {
       status: '成功',
-      delNote: needDel ? '延長' : '変更なし',
-      depNote: depNote,
-      reason: needDel
-        ? (needDep ? '削除日延長・預入日更新' : '削除日延長')
-        : '削除日変更なし・預入日のみ更新'
+      delNote: confirmedDel ? displayIso(confirmedDel) : '-',
+      depNote: confirmedDep ? displayIso(confirmedDep) : '-',
+      reason: successReason
     };
   }
 
@@ -1935,7 +2033,13 @@
           } catch (e) {
             var msg = String((e && e.message) || e);
             console.warn('[' + (item.no || item.fallbackLabel) + '] 試行 ' + attempt + ' 失敗: ' + msg);
-            result = { status: '失敗', delNote: '-', depNote: '-', reason: msg };
+            var failedModel = modelForOrder(item.order);
+            result = {
+              status: '失敗',
+              delNote: failedModel ? failedModel.delNote : '-',
+              depNote: failedModel ? failedModel.depNote : '-',
+              reason: msg
+            };
             destroyCaptured();
 
             if (attempt < MAX_ATTEMPTS) {
@@ -1943,8 +2047,6 @@
                 final: false,
                 status: '1回目失敗',
                 statusClass: 'processing',
-                delNote: '-',
-                depNote: '-',
                 reason: msg + ' / 再試行します'
               });
             }
