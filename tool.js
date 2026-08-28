@@ -41,7 +41,7 @@
   // 既に読み込み済みの場合:
   // - 同じ版なら既存インスタンスを再表示
   // - 新版が読み込まれた場合は、実行中でなければ旧版を破棄して新版へ入れ替える
-  // これにより同じwebCVタブを開き続けていても、次回クリック時に最新版が使われる。
+  // これにより同じタブを開き続けていても、次回クリック時に最新版が使われる。
   if (window[TOOL_GLOBAL]) {
     var existingTool = window[TOOL_GLOBAL];
     if (existingTool.version === TOOL_VERSION && typeof existingTool.show === 'function') {
@@ -856,9 +856,9 @@
       '@media(max-width:760px){.panel{height:94vh;max-width:98vw}.config{grid-template-columns:1fr 1fr}.mode-field{grid-column:1/-1}.list-head,.result-row{grid-template-columns:36px 120px 360px 130px 80px 100px 280px}.list-head,.list-scroll{min-width:1106px}}',
       '</style>',
       '<div class="overlay">',
-      '  <div class="panel" role="dialog" aria-modal="true" aria-label="webCV素材をザオリクする">',
+      '  <div class="panel" role="dialog" aria-modal="true" aria-label="素材をザオリクする">',
       '    <div class="titlebar">',
-      '      <h1>webCV素材をザオリクする</h1>',
+      '      <h1>素材をザオリクする</h1>',
       '      <span class="version">Ver. ' + TOOL_VERSION + '</span>',
       '      <button class="xbtn" id="btn-x" aria-label="閉じる" title="閉じる">×</button>',
       '    </div>',
