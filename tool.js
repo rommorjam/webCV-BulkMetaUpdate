@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * webCV素材をザオリクする
+ * CVホイミン
  * Version 1.0.19
  * ============================================================================
  * targetCode.js v5 の更新エンジンをベースに、ブックマークレット配布用のUIを追加。
@@ -387,7 +387,7 @@
     if (!screen) {
       return {
         ok: false,
-        message: '素材をザオリクする場合は\nwebCVの素材検索画面またはコンテナ画面で\n実行してください。'
+        message: '素材をホイミする場合は\nwebCVの素材検索画面またはコンテナ画面で\n実行してください。'
       };
     }
 
@@ -903,9 +903,9 @@
       '@media(max-width:760px){.panel{height:94vh;max-width:98vw}.config{grid-template-columns:1fr 1fr}.mode-field{grid-column:1/-1}.list-head,.result-row{grid-template-columns:36px 120px 360px 130px 80px 100px 280px}.list-head,.list-scroll{min-width:1106px}}',
       '</style>',
       '<div class="overlay">',
-      '  <div class="panel" role="dialog" aria-modal="true" aria-label="素材をザオリクする">',
+      '  <div class="panel" role="dialog" aria-modal="true" aria-label="素材をホイミする">',
       '    <div class="titlebar">',
-      '      <h1>素材をザオリクする</h1>',
+      '      <h1>素材をホイミする</h1>',
       '      <span class="version">Ver. ' + TOOL_VERSION + '</span>',
       '      <button class="xbtn" id="btn-x" aria-label="閉じる" title="閉じる">×</button>',
       '    </div>',
@@ -932,7 +932,7 @@
       '    <div class="footer">',
       '      <div class="footer-note" id="footer-note">実行中はこのタブを閉じたり、webCVを操作しないでください。</div>',
       '      <button class="btn" id="btn-close">閉じる</button>',
-      '      <button class="btn btn-primary" id="btn-run">ザオリク！</button>',
+      '      <button class="btn btn-primary" id="btn-run">ホイミ</button>',
       '    </div>',
       '  </div>',
       '</div>'
@@ -1159,7 +1159,7 @@
     if (currentContext && currentContext.targets.length === 0) {
       message = '処理対象の素材がありません。削除済・番号不明・Error除外などの一覧を確認してください。';
     } else if (currentContext && getSelectedTargetCount() === 0) {
-      message = 'ザオリク対象の素材を1件以上選択してください。';
+      message = 'ホイミ対象の素材を1件以上選択してください。';
     } else if (mode === '2' && !del && !dep) {
       message = '削除日・預入日を選択してください。';
     } else if (!del) {
@@ -1352,7 +1352,7 @@
       row.className = 'result-row ' + (model.statusClass || '');
       row.dataset.order = String(model.order);
       row.innerHTML =
-        '<div class="select-col"><input type="checkbox" class="row-select" aria-label="この素材をザオリク対象にする"></div>' +
+        '<div class="select-col"><input type="checkbox" class="row-select" aria-label="この素材をホイミ対象にする"></div>' +
         '<div class="material"></div>' +
         '<div class="material-title"></div>' +
         '<div class="status"></div>' +
@@ -1487,7 +1487,7 @@
     $('btn-close').disabled = false;
     $('btn-close').style.display = '';
     $('btn-run').style.display = '';
-    $('btn-run').textContent = 'ザオリク！';
+    $('btn-run').textContent = 'ホイミ';
     $('state-title').textContent = '実行内容を確認してください';
     $('current').textContent = '';
     $('footer-note').textContent = '対象一覧と設定日を確認してから実行してください。';
