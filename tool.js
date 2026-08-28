@@ -1,7 +1,7 @@
 /**
  * ============================================================================
  * webCV 削除日延長バルス
- * Version 1.0.16
+ * Version 1.0.17
  * ============================================================================
  * targetCode.js v5 の更新エンジンをベースに、ブックマークレット配布用のUIを追加。
  *
@@ -11,7 +11,7 @@
  * - 素材の存在検知を番号書式から分離し、素材番号は専用DOMから緩く取得・正規化
  * - 2画面モードでは実行不可
  * - 「CV収録送出」グループ選択時のみ実行
- * - 削除日のみ / 削除日+預入日の2モード
+ * - 削除日+預入日 / 削除日のみの2モード（左側の削除日+預入日を起動時デフォルト選択）
  * - 削除日は既存値以上の場合のみ処理（前倒し禁止・既存値空欄は素材全体をスキップ）
  * - Error を最優先で除外し、素材タイトル空は全画面・全素材で事前スキップ
  * - サムネイル枠src空 + 素材タイトル空は、ユーザー表示上「削除済み」としてスキップ
@@ -34,7 +34,7 @@
 (function () {
   'use strict';
 
-  var TOOL_VERSION = '1.0.16';
+  var TOOL_VERSION = '1.0.17';
   var TOOL_GLOBAL = '__cvDateBatchTool';
   var RESULT_GLOBAL = '__cvDeleteDateResults';
 
@@ -865,9 +865,9 @@
       '    <div class="top">',
       '      <div class="context"><span id="screen-info"></span><span>グループ: CV収録送出</span><span id="detected-info"></span></div>',
       '      <div class="config" id="config-area">',
-      '        <div class="mode-field"><span class="field-label">処理モード</span><div class="radios"><label class="radio"><input type="radio" name="mode" value="1" checked> 削除日のみ更新</label><label class="radio"><input type="radio" name="mode" value="2"> 削除日＋預入日を更新</label></div></div>',
+      '        <div class="mode-field"><span class="field-label">処理モード</span><div class="radios"><label class="radio"><input type="radio" name="mode" value="2" checked> 削除日＋預入日を更新</label><label class="radio"><input type="radio" name="mode" value="1"> 削除日のみ更新</label></div></div>',
       '        <label><span class="field-label">削除日</span><input type="date" id="delete-date" required aria-required="true"></label>',
-      '        <label><span class="field-label">預入日</span><input type="date" id="deposit-date" disabled></label>',
+      '        <label><span class="field-label">預入日</span><input type="date" id="deposit-date"></label>',
       '      </div>',
       '      <div class="rule"><strong>削除日は入力必須</strong>です。「削除日＋預入日を更新」では<strong>預入日も入力必須</strong>です。日付ルール: 削除日・預入日はツール実行日以降、かつ 削除日 &gt; 預入日。</div>',
       '      <div class="validation" id="validation"></div>',
@@ -933,7 +933,7 @@
 
   function getMode() {
     var checked = shadow.querySelector('input[name="mode"]:checked');
-    return checked ? checked.value : '1';
+    return checked ? checked.value : '2';
   }
 
   function openNativeDatePicker(input) {
@@ -1377,15 +1377,15 @@
     $('deposit-date').min = executionDateIso;
     $('delete-date').value = '';
     $('deposit-date').value = '';
-    $('deposit-date').disabled = true;
-    var mode1 = shadow.querySelector('input[name="mode"][value="1"]');
-    if (mode1) mode1.checked = true;
+    $('deposit-date').disabled = false;
+    var mode2 = shadow.querySelector('input[name="mode"][value="2"]');
+    if (mode2) mode2.checked = true;
 
     $('screen-info').textContent = '実行画面: ' + ctx.screenDesc + ' / ' + ctx.viewDesc;
 
     $('config-area').style.opacity = '1';
     Array.from(shadow.querySelectorAll('#config-area input')).forEach(function (el) { el.disabled = false; });
-    $('deposit-date').disabled = true;
+    $('deposit-date').disabled = false;
     $('btn-x').disabled = false;
     $('btn-close').disabled = false;
     $('btn-close').style.display = '';
